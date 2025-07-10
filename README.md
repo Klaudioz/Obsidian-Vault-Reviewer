@@ -1,19 +1,86 @@
 # Obsidian Vault Reviewer
 
-An AI-powered tool to help you clean up and organize your Obsidian vault by analyzing note relevance using Google's Gemini AI.
+An AI-powered tool to help you clean up and organize your Obsidian vault by analyzing note relevance using Google's Gemini AI. Designed specifically for "second brain" and zettelkasten workflows.
 
-## Features
+## ✨ Key Features
 
-- 🔍 **Automated Analysis**: Uses Gemini AI to analyze each note's relevance
-- ⭐ **Relevance Scoring**: Provides 0-10 relevance scores for each note
-- 🎯 **Smart Recommendations**: AI suggests whether to keep or delete each note
-- 📊 **Progress Tracking**: Shows progress through your entire vault
-- 📋 **Session Logging**: Keeps a record of all decisions made
-- 🛡️ **Safe Operations**: Asks for confirmation before deleting files
-- 🔗 **Link-Aware**: Gives higher scores to notes with many [[wiki-style]] connections
+- 🧠 **"Second Brain" Optimized**: Prioritizes personal knowledge, insights, and interconnected notes
+- 🤖 **Auto-Decision System**: Automatically keeps high-scoring notes (7+) and optionally deletes low-scoring ones
+- ⚡ **Single-Key Interface**: Fast review with k/d/v/s/q keys - no Enter needed!
+- 📊 **Progress Tracking**: Resume interrupted sessions, visual progress bar with time estimates
+- 🔗 **WikiLink Aware**: Heavily favors notes with [[internal links]] and #tags
+- 🖥️ **Clean Interface**: Auto-clearing screen shows only current note analysis
+- 🎯 **Smart Scoring**: Enhanced 0-10 scoring system emphasizing personal value
 - 🔐 **Security-Conscious**: Protects notes containing API keys, passwords, or credentials
+- 📋 **Session Management**: Save/resume progress, configurable auto-decisions
+- 🖱️ **Clickable Paths**: File names link directly to Obsidian for easy access
 
-## Setup
+## 🎯 Enhanced Scoring System
+
+The AI uses a sophisticated "second brain" scoring system that heavily favors personal knowledge:
+
+### 🌟 **Maximum Value (9-10 points) - Core "Second Brain" Content:**
+- **Personal financial data** (investments, 401k, portfolio tracking): +5 points
+- **Personal medical/health records** (symptoms, treatments, health tracking): +5 points  
+- **Original thoughts and insights** (unique ideas, "aha moments"): +4 points
+- **Personal learning synthesis** (combining sources with your understanding): +4 points
+- **Life experiences and stories** (travel, relationships, major events): +4 points
+- **API keys, passwords, credentials**: +5 points
+
+### 🚀 **High Value (7-8 points) - Personal Development:**
+- **Personal project tracking** (goals, habits, progress logs): +4 points
+- **Career development** (job history, performance reviews, planning): +4 points
+- **Book notes with personal commentary** (your thoughts + highlights): +3 points
+- **Daily notes and journal entries** (personal reflections, planning): +3 points
+- **Personal workflows and systems** (custom templates, processes): +3 points
+
+### 🔗 **Knowledge Network Value (5-7 points) - Organization:**
+- **Multiple WikiLinks [[note name]]** (3+ internal links): +3 points
+- **Tags and metadata** (#tag, YAML frontmatter): +3 points
+- **Hub/index notes** (MOCs - Maps of Content): +3 points
+- **Personal research with insights** (your questions, conclusions): +2 points
+- **Obsidian links [[note name]]**: +2 points
+
+### ❌ **Major Penalties (Anti-"Second Brain" Content):**
+- **Copy-pasted content without personal input**: -4 points
+- **No WikiLinks or tags**: -3 points (defeats Obsidian's purpose)
+- **Easily recreated from Google/Wikipedia**: -4 points
+- **Empty placeholder notes**: -3 points
+
+## 🤖 Auto-Decision System
+
+Configure intelligent automation to speed up your review:
+
+### **Auto-Keep (Default: 7+ points)**
+- High-scoring personal notes automatically kept
+- Bypass manual review for valuable content
+- Focus your time on borderline cases
+
+### **Auto-Delete (Optional: 2- points)**  
+- Very low-scoring notes can be auto-deleted
+- Disabled by default for safety
+- Configurable threshold (0-3 points)
+
+### **Configuration**
+```
+Configure auto-decision settings? (y/n): y
+
+⚙️ Auto-Decision Configuration
+==================================================
+Enable auto-keep for high-scoring notes? (currently: ON) (y/n): y
+Current auto-keep threshold: 7
+Enter new threshold (7-10) or press Enter to keep current: 8
+
+Enable auto-delete for low-scoring notes? (currently: OFF) (y/n): n
+
+Show auto-decision notifications? (currently: ON) (y/n): y
+
+✅ Configuration saved!
+   Auto-keep: Notes scoring 8+ will be kept automatically
+   Notifications: Enabled
+```
+
+## 🔧 Setup
 
 ### 1. Install Dependencies
 
@@ -35,17 +102,14 @@ export GEMINI_API_KEY="your-api-key-here"
 
 **Option B: Enter When Prompted**
 - The script will ask for your API key when you run it
-- Just paste it when prompted
 
 ### 4. Backup Your Vault (Recommended)
-
-Before running the script, make a backup of your Obsidian vault:
 
 ```bash
 cp -r /path/to/your/vault /path/to/backup/location
 ```
 
-## Usage
+## 🚀 Usage
 
 ### Basic Usage
 
@@ -53,121 +117,200 @@ cp -r /path/to/your/vault /path/to/backup/location
 python obsidian_vault_reviewer.py
 ```
 
-The script will:
-1. Ask for your Gemini API key (if not set as environment variable)
-2. Ask for your vault path (defaults to current directory)
-3. Scan for all markdown files
-4. Analyze each file and present you with options
+### First-Time Setup Flow
 
-### During Review
+1. **API Key**: Enter your Gemini API key (if not set as environment variable)
+2. **Vault Path**: Specify your vault directory (defaults to current directory)
+3. **Auto-Configuration**: Choose whether to configure auto-decision settings
+4. **Review Start**: Clean interface begins analyzing files
 
-For each note, you'll see:
-- **File information**: Name, path, size
-- **AI Analysis**: Relevance score (0-10) and reasoning
-- **AI Recommendation**: Keep or delete suggestion
-- **Content Preview**: First 300 characters of the note
-
-Then choose:
-- `k` - Keep the file
-- `d` - Delete the file
-- `s` - Skip for now
-- `q` - Quit the review process
-
-### Example Session
+### Session Continuation
 
 ```
-📄 File: Old Meeting Notes.md
-📁 Path: work/Old Meeting Notes.md
-📏 Size: 1205 characters
-⭐ Relevance Score: 2/10
-🤔 AI Reasoning: Contains outdated meeting notes from 2020 with no actionable items
-💡 AI Recommendation: DELETE
-👀 Preview: Meeting notes from March 2020 - discussed project xyz...
+Found previous review session from: 2024-01-15 14:30:25
+Files already processed: 847
+Files deleted: 23
+Files kept: 824
+
+Do you want to continue the previous review session? (y/n): y
+Continuing previous session...
+```
+
+### Review Interface
+
+**Single-Key Controls (No Enter Required):**
+- **k** - Keep this file (default - just press Enter)
+- **d** - Delete this file  
+- **v** - View entire note content
+- **s** - Skip for now
+- **q** - Quit and save progress
+
+### Example Auto-Decision
+
+```
+🤖 AUTO-KEEP: Score 8/7+ → Automatically kept
+📄 Personal-Investment-Strategy.md
+💡 This note contains personal financial planning with specific investment goals...
+
+🤖 AUTO-KEEP: Score 9/7+ → Automatically kept  
+📄 Book-Notes-Atomic-Habits-Personal-Insights.md
+💡 Excellent synthesis of book content with personal applications and unique insights...
+```
+
+### Manual Review Example
+
+```
+================================================================================
+📄 File: Weekly-Review-Template.md
+📁 Path: templates/Weekly-Review-Template.md
+📊 Size: 1,847 characters
+⭐ Relevance Score: 6/10
+
+📖 Preview:
+📋 Weekly Review Template
+  • **What went well this week?**
+  • **What could be improved?**
+  • **Key accomplishments:**
+  • **Next week's priorities:**
+
+🤖 AI Reasoning:
+  This is a well-structured personal template for weekly reviews. Contains good prompts for self-reflection and planning. Templates like this support consistent personal development practices and should be retained.
+
+✅ AI Recommendation: KEEP
+================================================================================
 
 What would you like to do?
-  [k] Keep this file
+  [k] Keep this file (default)
   [d] Delete this file
+  [v] View entire note content
   [s] Skip for now
   [q] Quit the review process
 
-Enter your choice (k/d/s/q): d
-✅ Deleted: work/Old Meeting Notes.md
+Press a key (k/d/v/s/q) or Enter for default (keep): k
+Kept: templates/Weekly-Review-Template.md
 ```
 
-## Enhanced Scoring Criteria
+## 📊 Progress Tracking
 
-The AI evaluates notes with these score ranges:
+**Visual Progress Bar:**
+```
+Processing: Daily-Note-2024-01-15.md: 23%|████▌     | 1847/8012 files [15:32<45:21, 2.27files/s]
+```
 
-- **0-2**: Outdated, redundant, or no value (should delete)
-- **3-4**: Low value, probably safe to delete
-- **5-6**: Moderate value, review carefully
-- **7-8**: High value, likely keep
-- **9-10**: Essential content, definitely keep
+**Session Management:**
+- Automatic progress saving after each file
+- Resume interrupted sessions exactly where you left off
+- Progress file: `.obsidian_review_progress.json` (auto-cleanup when complete)
+- Graceful handling of Ctrl+C interruptions
 
-### Scoring Bonuses
+## 💡 Smart Features
 
-The AI automatically adds bonus points for:
+### **🖱️ Clickable File Paths**
+File names become clickable terminal links that open directly in Obsidian:
+```
+📄 File: My-Important-Note.md  [Click to open in Obsidian]
+```
 
-- **🔐 Sensitive Information** (+2-3 points): Notes containing API keys, passwords, tokens, or credentials
-- **🔗 Connected Notes** (+1-2 points): Notes with Obsidian [[wiki-style links]] to other notes
-- **🌟 Hub Notes** (+2-3 points): Notes with many outgoing links (central to your knowledge network)
-- **📝 Template Files** (+1-2 points): Reusable template structures
+### **🧹 Clean Interface**
+- Screen clears after each decision
+- Shows only current file analysis
+- No accumulated clutter from previous files
+- Progress indicator after each clear
 
-## Factors Considered
+### **⌨️ Fast Input System**
+- Cross-platform single-key input (Windows, macOS, Linux)
+- No need to press Enter for any decision
+- Immediate visual feedback for key presses
+- Enter key works as default (keep) for convenience
 
-The AI considers:
-- Content quality and depth
-- Uniqueness of information
-- Practical utility
-- Recency and relevance
-- Whether it's a template, reference, or personal note
-- **NEW: Presence of sensitive information (API keys, passwords)**
-- **NEW: Interconnectedness via [[Obsidian links]]**
-- **NEW: Role as a hub/index note with many connections**
+### **🔄 Session Interruption Handling**
+- Ctrl+C gracefully saves progress
+- Signal handlers for SIGINT and SIGTERM
+- Continue exactly where you left off
+- No lost work from unexpected interruptions
 
-## Safety Features
+## 🎯 Best Practices
 
-- **Confirmation Required**: You must manually confirm each deletion
-- **Session Logging**: All actions are logged in `vault_review_log.json`
-- **Progress Tracking**: See exactly which files have been processed
-- **Error Handling**: Gracefully handles API failures and file read errors
-- **Security Awareness**: Protects notes with sensitive information
+### **For "Second Brain" Optimization:**
+1. **WikiLinks are Essential**: Notes without [[internal links]] or #tags get penalty points
+2. **Personal > Generic**: Your thoughts and insights score much higher than copied content  
+3. **Connected Knowledge**: Hub notes with many outgoing links are highly valued
+4. **Original Synthesis**: Combining multiple sources with your understanding gets top scores
 
-## Output
+### **Review Strategy:**
+1. **Configure Auto-Decisions**: Set auto-keep at 7+ to skip obvious keepers
+2. **Focus on Middle Range**: Spend time on 3-6 score notes that need human judgment
+3. **Use View Option**: Press 'v' to see full content when unsure
+4. **Take Breaks**: Progress is saved automatically - quit and resume anytime
 
-After the session, you'll get:
-- Summary of files deleted and kept
-- Detailed log saved as `vault_review_log.json` in your vault
-- List of all deleted files for reference
+### **Performance Tips:**
+1. **Start with Auto-Keep**: Configure threshold to automatically keep high-value notes
+2. **Progressive Cleanup**: Review in chunks, use session continuation
+3. **Backup First**: Always backup before major cleanup sessions
+4. **Monitor Progress**: Use the progress bar to estimate time remaining
 
-## Tips
+## 📋 Output & Logging
 
-1. **Start Small**: Consider testing on a small folder first
-2. **Backup First**: Always backup your vault before running
-3. **Review AI Suggestions**: The AI provides recommendations, but you make the final decision
-4. **Session Logs**: Keep the log files for reference
-5. **API Limits**: The script includes delays to respect API rate limits
-6. **Connected Notes**: The AI will score notes with many [[links]] higher (they're often important hubs)
-7. **Sensitive Data**: Notes with API keys or passwords get bonus points automatically
+**Session Summary:**
+```
+================================================================================
+REVIEW SESSION SUMMARY
+================================================================================
+Files deleted: 127
+Files kept: 3,456  
+Total processed: 3,583
 
-## Requirements
+Deleted files:
+   - old-notes/outdated-software-guide.md
+   - temporary/draft-notes-2020.md
+   - ...
+```
+
+**Automatic Logs:**
+- `vault_review_log.json` - Complete session record
+- `.obsidian_review_progress.json` - Progress tracking (auto-cleaned)
+
+## 🔧 Requirements
 
 - Python 3.7+
+- Dependencies: `google-generativeai`, `colorama`, `tqdm`
 - Gemini API key (free from Google AI Studio)
 - Internet connection for AI analysis
 
-## Troubleshooting
+## 🐛 Troubleshooting
 
-### Common Issues
+### **Common Issues:**
 
-1. **API Key Error**: Make sure your Gemini API key is valid and has sufficient quota
-2. **File Permission Error**: Ensure you have write permissions for the vault directory
-3. **Unicode Error**: Some files may have encoding issues - these will be skipped with a warning
+**API Key Error:**
+```bash
+export GEMINI_API_KEY="your-actual-key-here"
+# Make sure quotes are included and key is valid
+```
 
-### Rate Limits
+**File Permission Error:**
+- Ensure write permissions for vault directory
+- Check that files aren't locked by Obsidian
 
-The script includes a 1-second delay between API calls to respect rate limits. If you encounter rate limit errors, the script will continue with default scoring.
+**Unicode/Encoding Error:**  
+- Files with encoding issues are skipped with warnings
+- UTF-8 encoding is assumed
 
-## License
+**Rate Limit Issues:**
+- Script includes 1-second delays between API calls
+- If limits hit, script continues with default scoring
 
-This script is provided as-is for personal use. Please review and test thoroughly before using on important data. 
+### **Performance Issues:**
+
+**Slow Processing:**
+- Configure auto-keep threshold to skip obvious high-value notes
+- Use session continuation for large vaults
+- Close Obsidian during review to avoid file conflicts
+
+**Memory Usage:**
+- Progress is saved incrementally  
+- Large vaults are handled efficiently
+- Progress bar shows memory-friendly file streaming
+
+## 📄 License
+
+This script is provided as-is for personal use. Please review and test thoroughly before using on important data. Always backup your vault before running cleanup operations. 

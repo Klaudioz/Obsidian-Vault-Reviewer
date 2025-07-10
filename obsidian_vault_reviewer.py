@@ -50,6 +50,15 @@ class ObsidianVaultReviewer:
         self.original_session_start = time.strftime("%Y-%m-%d %H:%M:%S")  # Track session start time
         self.setup_signal_handlers()  # Handle Ctrl-C gracefully
         
+        # Configuration for auto-decisions
+        self.config = {
+            "auto_keep_enabled": True,
+            "auto_keep_threshold": 7,
+            "auto_delete_enabled": False,
+            "auto_delete_threshold": 2,
+            "show_auto_decisions": True
+        }
+        
     def setup_gemini(self):
         """Configure Gemini API."""
         genai.configure(api_key=self.api_key)
@@ -83,6 +92,85 @@ class ObsidianVaultReviewer:
             except (KeyboardInterrupt, EOFError):
                 print("\nExiting...")
                 sys.exit(0)
+                
+    def configure_auto_decisions(self):
+        """Configure auto-decision settings."""
+        print(f"\n{Fore.CYAN}⚙️  Auto-Decision Configuration{Style.RESET_ALL}")
+        print("="*50)
+        
+        # Auto-keep configuration
+        if self.get_yes_no_input(f"Enable auto-keep for high-scoring notes? (currently: {'ON' if self.config['auto_keep_enabled'] else 'OFF'})"):
+            self.config["auto_keep_enabled"] = True
+            print(f"Current auto-keep threshold: {self.config['auto_keep_threshold']}")
+            print("Enter new threshold (7-10) or press Enter to keep current: ", end="", flush=True)
+            try:
+                threshold_input = input().strip()
+                if threshold_input:
+                    threshold = int(threshold_input)
+                    if 7 <= threshold <= 10:
+                        self.config["auto_keep_threshold"] = threshold
+                        print(f"Auto-keep threshold set to: {threshold}")
+                    else:
+                        print("Invalid threshold. Keeping current value.")
+            except ValueError:
+                print("Invalid input. Keeping current value.")
+        else:
+            self.config["auto_keep_enabled"] = False
+            
+        # Auto-delete configuration
+        if self.get_yes_no_input(f"Enable auto-delete for low-scoring notes? (currently: {'ON' if self.config['auto_delete_enabled'] else 'OFF'})"):
+            self.config["auto_delete_enabled"] = True
+            print(f"Current auto-delete threshold: {self.config['auto_delete_threshold']}")
+            print("Enter new threshold (0-3) or press Enter to keep current: ", end="", flush=True)
+            try:
+                threshold_input = input().strip()
+                if threshold_input:
+                    threshold = int(threshold_input)
+                    if 0 <= threshold <= 3:
+                        self.config["auto_delete_threshold"] = threshold
+                        print(f"Auto-delete threshold set to: {threshold}")
+                    else:
+                        print("Invalid threshold. Keeping current value.")
+            except ValueError:
+                print("Invalid input. Keeping current value.")
+        else:
+            self.config["auto_delete_enabled"] = False
+            
+        # Show auto-decisions
+        show_auto = self.get_yes_no_input(f"Show auto-decision notifications? (currently: {'ON' if self.config['show_auto_decisions'] else 'OFF'})")
+        self.config["show_auto_decisions"] = show_auto
+        
+        print(f"\n{Fore.GREEN}✅ Configuration saved!{Style.RESET_ALL}")
+        if self.config["auto_keep_enabled"]:
+            print(f"   Auto-keep: Notes scoring {self.config['auto_keep_threshold']}+ will be kept automatically")
+        if self.config["auto_delete_enabled"]:
+            print(f"   Auto-delete: Notes scoring {self.config['auto_delete_threshold']} or below will be deleted automatically")
+        print(f"   Notifications: {'Enabled' if self.config['show_auto_decisions'] else 'Disabled'}")
+        print("")
+        
+    def check_auto_decision(self, file_path: Path, analysis: Dict) -> Optional[str]:
+        """Check if an auto-decision should be made based on score and configuration."""
+        score = analysis['score']
+        
+        # Auto-keep check
+        if (self.config["auto_keep_enabled"] and 
+            score >= self.config["auto_keep_threshold"]):
+            if self.config["show_auto_decisions"]:
+                tqdm.write(f"\n🤖 AUTO-KEEP: Score {score}/{self.config['auto_keep_threshold']}+ → {Fore.GREEN}Automatically kept{Style.RESET_ALL}")
+                tqdm.write(f"📄 {file_path.name}")
+                tqdm.write(f"💡 {analysis['reasoning'][:100]}...")
+            return "auto_keep"
+            
+        # Auto-delete check  
+        if (self.config["auto_delete_enabled"] and 
+            score <= self.config["auto_delete_threshold"]):
+            if self.config["show_auto_decisions"]:
+                tqdm.write(f"\n🤖 AUTO-DELETE: Score {score}/{self.config['auto_delete_threshold']}- → {Fore.RED}Automatically deleted{Style.RESET_ALL}")
+                tqdm.write(f"📄 {file_path.name}")
+                tqdm.write(f"💡 {analysis['reasoning'][:100]}...")
+            return "auto_delete"
+            
+        return None
         
     def signal_handler(self, signum, frame):
         """Handle interruption signals (Ctrl-C) gracefully."""
@@ -236,7 +324,8 @@ class ObsidianVaultReviewer:
             "processed_files": list(self.processed_files),
             "deleted_files": [str(f) for f in self.deleted_files],
             "kept_files": [str(f) for f in self.kept_files],
-            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S")
+            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "config": self.config
         }
         
         try:
@@ -264,6 +353,10 @@ class ObsidianVaultReviewer:
             self.deleted_files = [Path(f) for f in progress_data.get("deleted_files", [])]
             self.kept_files = [Path(f) for f in progress_data.get("kept_files", [])]
             self.original_session_start = progress_data.get("session_start", time.strftime("%Y-%m-%d %H:%M:%S"))
+            
+            # Load configuration (merge with defaults for new settings)
+            saved_config = progress_data.get("config", {})
+            self.config.update(saved_config)
             
             print(f"Found previous review session from: {progress_data.get('session_start', 'Unknown')}")
             print(f"Files already processed: {len(self.processed_files)}")
@@ -661,6 +754,10 @@ Respond in JSON format:
             print(f"Progress: {processed_count}/{total_files} files already processed")
         print("Tip: Consider backing up your vault before proceeding!")
         
+        # Configure auto-decisions if user wants to
+        if self.get_yes_no_input("Configure auto-decision settings?"):
+            self.configure_auto_decisions()
+        
         # Save initial progress to create the file
         self.save_progress()
         
@@ -696,45 +793,60 @@ Respond in JSON format:
                 tqdm.write(f"\nAnalyzing: {file_path.name}...")
                 analysis = self.analyze_note_relevance(file_path, content)
                 
-                # Display results using tqdm.write to avoid interfering with progress bar
-                self.display_analysis_with_tqdm(file_path, analysis, content)
+                # Check for auto-decision
+                auto_decision = self.check_auto_decision(file_path, analysis)
                 
-                # Get user decision (loop until they make a final choice)
-                while True:
-                    decision = self.get_user_decision(analysis)
+                if auto_decision == "auto_keep":
+                    self.kept_files.append(file_path)
+                    self.processed_files.add(str(file_path))
+                    self.save_progress()
+                    decision = 'keep'
+                elif auto_decision == "auto_delete":
+                    if self.delete_file(file_path):
+                        self.deleted_files.append(file_path)
+                    self.processed_files.add(str(file_path))
+                    self.save_progress()
+                    decision = 'delete'
+                else:
+                    # Display results using tqdm.write to avoid interfering with progress bar
+                    self.display_analysis_with_tqdm(file_path, analysis, content)
                     
-                    if decision == 'quit':
-                        tqdm.write("\nReview process stopped by user.")
-                        tqdm.write("Progress has been saved. You can continue later by running the script again.")
-                        break
-                    elif decision == 'view':
-                        self.display_full_content_with_tqdm(file_path, content)
-                        # Clear screen after viewing full content and re-display analysis
-                        self.clear_screen()
-                        # Show progress after clearing screen
-                        current_progress = processed_count + i
-                        tqdm.write(f"Progress: {current_progress}/{total_files} files processed ({current_progress/total_files*100:.1f}%)")
-                        tqdm.write("")  # Add blank line for readability
-                        self.display_analysis_with_tqdm(file_path, analysis, content)
-                        # Continue the loop to ask for decision again
-                        continue
-                    elif decision == 'delete':
-                        if self.delete_file(file_path):
-                            self.deleted_files.append(file_path)
-                        self.processed_files.add(str(file_path))
-                        self.save_progress()  # Save progress after each file
-                        break
-                    elif decision == 'keep':
-                        self.kept_files.append(file_path)
-                        tqdm.write(f"Kept: {file_path}")
-                        self.processed_files.add(str(file_path))
-                        self.save_progress()  # Save progress after each file
-                        break
-                    elif decision == 'skip':
-                        tqdm.write(f"Skipped: {file_path}")
-                        self.processed_files.add(str(file_path))
-                        self.save_progress()  # Save progress after each file
-                        break
+                    # Get user decision (loop until they make a final choice)
+                    while True:
+                        decision = self.get_user_decision(analysis)
+                        
+                        if decision == 'quit':
+                            tqdm.write("\nReview process stopped by user.")
+                            tqdm.write("Progress has been saved. You can continue later by running the script again.")
+                            break
+                        elif decision == 'view':
+                            self.display_full_content_with_tqdm(file_path, content)
+                            # Clear screen after viewing full content and re-display analysis
+                            self.clear_screen()
+                            # Show progress after clearing screen
+                            current_progress = processed_count + i
+                            tqdm.write(f"Progress: {current_progress}/{total_files} files processed ({current_progress/total_files*100:.1f}%)")
+                            tqdm.write("")  # Add blank line for readability
+                            self.display_analysis_with_tqdm(file_path, analysis, content)
+                            # Continue the loop to ask for decision again
+                            continue
+                        elif decision == 'delete':
+                            if self.delete_file(file_path):
+                                self.deleted_files.append(file_path)
+                            self.processed_files.add(str(file_path))
+                            self.save_progress()  # Save progress after each file
+                            break
+                        elif decision == 'keep':
+                            self.kept_files.append(file_path)
+                            tqdm.write(f"Kept: {file_path}")
+                            self.processed_files.add(str(file_path))
+                            self.save_progress()  # Save progress after each file
+                            break
+                        elif decision == 'skip':
+                            tqdm.write(f"Skipped: {file_path}")
+                            self.processed_files.add(str(file_path))
+                            self.save_progress()  # Save progress after each file
+                            break
                         
                 # Update progress bar
                 progress_bar.update(1)
