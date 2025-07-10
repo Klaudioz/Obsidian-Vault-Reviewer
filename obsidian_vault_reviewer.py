@@ -77,22 +77,35 @@ class ObsidianVaultReviewer:
         """Clear the terminal screen (cross-platform)."""
         os.system('cls' if os.name == 'nt' else 'clear')
         
-    def get_yes_no_input(self, prompt: str) -> bool:
-        """Get a yes/no decision using single-key input."""
+    def get_yes_no_input(self, prompt: str, default: Optional[str] = None) -> bool:
+        """Get a yes/no decision using single-key input with optional default."""
+        if default:
+            default_display = f" (default: {default})"
+            prompt_text = f"{prompt} (y/n{default_display}): "
+        else:
+            prompt_text = f"{prompt} (y/n): "
+            
         while True:
-            print(f"{prompt} (y/n): ", end="", flush=True)
+            print(prompt_text, end="", flush=True)
             
             try:
                 choice = getch()
                 
-                if choice == 'y':
+                # Handle Enter key (newline)
+                if choice in ['\r', '\n', ''] and default:
+                    print(f"{default} (default)")
+                    return default.lower() == 'y'
+                elif choice == 'y':
                     print("y")
                     return True
                 elif choice == 'n':
                     print("n")  
                     return False
                 else:
-                    print(f"{choice} - Invalid choice. Please press 'y' for yes or 'n' for no.")
+                    if default:
+                        print(f"{choice} - Invalid choice. Please press 'y' for yes, 'n' for no, or Enter for default ({default}).")
+                    else:
+                        print(f"{choice} - Invalid choice. Please press 'y' for yes or 'n' for no.")
             except (KeyboardInterrupt, EOFError):
                 print("\nExiting...")
                 sys.exit(0)
@@ -876,7 +889,7 @@ Respond in JSON format:
         # Check for existing progress
         continuing_session = False
         if self.load_progress():
-            continuing_session = self.get_yes_no_input("\nDo you want to continue the previous review session?")
+            continuing_session = self.get_yes_no_input("\nDo you want to continue the previous review session?", default="n")
             if continuing_session:
                 print("Continuing previous session...")
             else:

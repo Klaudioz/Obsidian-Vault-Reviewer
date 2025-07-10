@@ -8,7 +8,7 @@ An AI-powered tool to help you clean up and organize your Obsidian vault by anal
 - 🤖 **Auto-Decision System**: Automatically keeps high-scoring notes (7+) and optionally deletes low-scoring ones
 - ✨ **AI Note Enhancement**: Transform sparse notes into comprehensive knowledge with 100% content safety and automatic re-evaluation
 - ⚡ **Single-Key Interface**: Fast review with k/d/v/s/e/q keys - no Enter needed!
-- 📊 **Session Continuity**: Resume interrupted sessions exactly where you left off
+- 📊 **Session Continuity**: Resume interrupted sessions exactly where you left off (defaults to fresh start for safety)
 - 🔗 **WikiLink Aware**: Heavily favors notes with [[internal links]] and #tags
 - 🖥️ **Clean Interface**: Auto-clearing screen shows only current note analysis (with tqdm-compatible display)
 - 🎯 **Smart Scoring**: Enhanced 0-10 scoring system emphasizing personal value
@@ -187,6 +187,8 @@ python obsidian_vault_reviewer.py
 
 ### Session Continuation
 
+The script now defaults to starting fresh sessions for safety and convenience:
+
 ```
 Found previous review session from: 2024-01-15 14:30:25
 Files already processed: 847
@@ -194,9 +196,13 @@ Files deleted: 23
 Files kept: 824
 Files enhanced: 15
 
-Do you want to continue the previous review session? (y/n): y
-Continuing previous session...
+Do you want to continue the previous review session? (y/n (default: n)): n (default)
+Starting fresh review session...
 ```
+
+- **Default: No** - Press Enter to start fresh (recommended for safety)
+- **Continue: y** - Press 'y' to resume the previous session
+- **Fresh Start: n** - Press 'n' or Enter to start over
 
 ### Review Interface
 
@@ -415,11 +421,12 @@ File names become clickable terminal links that open directly in Obsidian:
 7. **Create Connections**: AI adds relevant [[WikiLinks]] to build your knowledge graph
 
 ### **Performance Tips:**
-1. **Start with Auto-Keep**: Configure threshold to automatically keep high-value notes
-2. **Use Enhancement Liberally**: Better to enhance and keep than to delete potentially useful content
-3. **Progressive Cleanup**: Review in chunks, use session continuation for large vaults
-4. **Backup First**: Always backup before major cleanup sessions
-5. **Monitor Progress**: Use the progress bar to estimate time remaining
+1. **Fresh Start Default**: The script now defaults to starting fresh sessions for safety - press Enter to start over
+2. **Start with Auto-Keep**: Configure threshold to automatically keep high-value notes
+3. **Use Enhancement Liberally**: Better to enhance and keep than to delete potentially useful content
+4. **Progressive Cleanup**: Review in chunks, use session continuation for large vaults (press 'y' when prompted)
+5. **Backup First**: Always backup before major cleanup sessions
+6. **Monitor Progress**: Use the progress bar to estimate time remaining
 
 ## 📋 Output & Logging
 
