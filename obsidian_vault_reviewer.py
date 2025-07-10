@@ -11,10 +11,12 @@ import time
 from pathlib import Path
 from typing import List, Dict, Optional
 import google.generativeai as genai
+from colorama import init, Fore, Style
 
 class ObsidianVaultReviewer:
     def __init__(self, api_key: str, vault_path: str):
         """Initialize the reviewer with Gemini API key and vault path."""
+        init(autoreset=True)  # Initialize colorama
         self.vault_path = Path(vault_path)
         self.api_key = api_key
         self.setup_gemini()
@@ -30,6 +32,7 @@ class ObsidianVaultReviewer:
         """Recursively find all markdown files in the vault."""
         print(f"Scanning vault: {self.vault_path}")
         md_files = list(self.vault_path.rglob("*.md"))
+        md_files.sort()  # Sort files alphabetically
         print(f"Found {len(md_files)} markdown files")
         return md_files
         
@@ -80,12 +83,18 @@ Consider factors like:
 - **IMPORTANT: Increase score if contains sensitive information like API keys, passwords, tokens, or credentials (+2-3 points)**
 - **IMPORTANT: Increase score if contains Obsidian links [[note name]] showing connections to other notes (+1-2 points)**
 - **IMPORTANT: Increase score if it's a hub/index note with many outgoing links (+2-3 points)**
+- **IMPORTANT: Increase score if note appears personal/autobiographical (+1-2 points)**
+- **IMPORTANT: Decrease score if content is easily recreated from Google or Wikipedia (-2-3 points)**
 
 SCORING BONUSES:
 - Contains API keys, passwords, or credentials: +2-3 points (important to keep secure info)
 - Contains [[wiki-style links]] to other notes: +1-2 points (shows interconnectedness)
 - Has many outgoing links (hub note): +2-3 points (central to knowledge network)
 - Template files: +1-2 points (reusable structure)
+- Personal/autobiographical content: +1-2 points (unique to the user)
+
+SCORING PENALTIES:
+- Easily recreated from Google/Wikipedia: -2-3 points (generic information)
 
 Respond in JSON format:
 {{
@@ -122,7 +131,21 @@ Respond in JSON format:
         print(f"File: {file_path.name}")
         print(f"Path: {file_path.relative_to(self.vault_path)}")
         print(f"Size: {len(content)} characters")
-        print(f"Relevance Score: {analysis['score']}/10")
+        
+        # Color-coded relevance score
+        score = analysis['score']
+        if score <= 2:
+            color = Fore.RED
+        elif score <= 4:
+            color = Fore.YELLOW
+        elif score <= 6:
+            color = Fore.CYAN
+        elif score <= 8:
+            color = Fore.GREEN
+        else:
+            color = Fore.LIGHTGREEN_EX
+            
+        print(f"Relevance Score: {color}{score}/10{Style.RESET_ALL}")
         
         # Show preview of content (larger and above reasoning)
         preview = content[:800].replace('\n', ' ')
@@ -130,7 +153,15 @@ Respond in JSON format:
             preview += "..."
         print(f"Preview: {preview}")
         print(f"AI Reasoning: {analysis['reasoning']}")
-        print(f"AI Recommendation: {analysis['recommendation'].upper()}")
+        
+        # Color-coded AI recommendation
+        recommendation = analysis['recommendation'].upper()
+        if recommendation == 'DELETE':
+            rec_color = Fore.RED
+        else:
+            rec_color = Fore.GREEN
+            
+        print(f"AI Recommendation: {rec_color}{recommendation}{Style.RESET_ALL}")
         print("="*80)
         
     def get_user_decision(self, analysis: Dict) -> str:
@@ -241,12 +272,12 @@ Respond in JSON format:
         print("\n" + "="*60)
         print("REVIEW SESSION SUMMARY")
         print("="*60)
-        print(f"Files deleted: {len(self.deleted_files)}")
-        print(f"Files kept: {len(self.kept_files)}")
-        print(f"Total processed: {len(self.deleted_files) + len(self.kept_files)}")
+        print(f"{Fore.RED}Files deleted: {len(self.deleted_files)}{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}Files kept: {len(self.kept_files)}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}Total processed: {len(self.deleted_files) + len(self.kept_files)}{Style.RESET_ALL}")
         
         if self.deleted_files:
-            print("\nDeleted files:")
+            print(f"\n{Fore.RED}Deleted files:{Style.RESET_ALL}")
             for file_path in self.deleted_files:
                 print(f"   - {file_path.relative_to(self.vault_path)}")
 
