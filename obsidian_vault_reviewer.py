@@ -10,9 +10,11 @@ import json
 import time
 import signal
 import re
+import random
 from pathlib import Path
 from typing import List, Dict, Optional
 import google.generativeai as genai
+from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable
 from colorama import init, Fore, Style
 from tqdm import tqdm
 
@@ -79,6 +81,54 @@ class ObsidianVaultReviewer:
         """Set up signal handlers to save progress on interruption."""
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
+        
+    def handle_rate_limiting(self, func, *args, max_retries=5, base_delay=1, **kwargs):
+        """
+        Handle API rate limiting with exponential backoff.
+        
+        Args:
+            func: The function to call
+            *args: Arguments for the function
+            max_retries: Maximum number of retry attempts (default: 5)
+            base_delay: Base delay in seconds (default: 1)
+            **kwargs: Keyword arguments for the function
+            
+        Returns:
+            The result of the function call
+            
+        Raises:
+            The last exception encountered if all retries fail
+        """
+        last_exception = None
+        
+        for attempt in range(max_retries + 1):
+            try:
+                return func(*args, **kwargs)
+                
+            except (ResourceExhausted, ServiceUnavailable) as e:
+                last_exception = e
+                
+                if attempt == max_retries:
+                    tqdm.write(f"❌ API rate limiting: All {max_retries} retries exhausted")
+                    raise e
+                
+                # Calculate delay with exponential backoff + jitter
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                
+                # Cap the delay at 60 seconds
+                delay = min(delay, 60)
+                
+                tqdm.write(f"⏳ API rate limited. Waiting {delay:.1f}s before retry {attempt + 1}/{max_retries}...")
+                time.sleep(delay)
+                
+            except Exception as e:
+                # For non-rate-limiting errors, don't retry
+                tqdm.write(f"❌ API error (not rate limiting): {e}")
+                raise e
+                
+        # This should never be reached, but just in case
+        if last_exception:
+            raise last_exception
         
     def clear_screen(self):
         """Clear the terminal screen (cross-platform)."""
@@ -270,7 +320,8 @@ Begin your response with the enhanced note content now:
 """
 
         try:
-            response = self.model.generate_content(prompt)
+            # Use rate limiting handler for the API call
+            response = self.handle_rate_limiting(self.model.generate_content, prompt)
             enhanced_content = response.text.strip()
             
             # Remove any markdown code blocks if present
@@ -923,7 +974,8 @@ JSON REQUIREMENTS:
 """
 
         try:
-            response = self.model.generate_content(prompt)
+            # Use rate limiting handler for the API call
+            response = self.handle_rate_limiting(self.model.generate_content, prompt)
             # Extract JSON from response
             response_text = response.text.strip()
             
