@@ -45,6 +45,7 @@ class ObsidianVaultReviewer:
         self.setup_gemini()
         self.deleted_files = []
         self.kept_files = []
+        self.enhanced_files = []
         self.progress_file = self.vault_path / ".obsidian_review_progress.json"
         self.processed_files = set()  # Track which files have been processed
         self.original_session_start = time.strftime("%Y-%m-%d %H:%M:%S")  # Track session start time
@@ -171,6 +172,61 @@ class ObsidianVaultReviewer:
             return "auto_delete"
             
         return None
+        
+    def enhance_note(self, file_path: Path, content: str) -> str:
+        """Use Gemini to enhance a sparse note by adding meaningful content."""
+        prompt = f"""
+You are helping improve a sparse Obsidian note in a personal knowledge management system. The current note is very brief and needs enhancement.
+
+Current Note:
+File: {file_path.name}
+Content:
+{content}
+
+Please enhance this note by adding 1-2 meaningful paragraphs that would make it more valuable in a personal "second brain" context. Focus on:
+
+1. **Practical Information**: Add useful details, examples, or context
+2. **Personal Knowledge**: Include information that would be helpful for future reference
+3. **Connections**: Suggest related concepts or potential [[WikiLinks]] to other topics
+4. **Examples**: Provide concrete examples or use cases when relevant
+5. **Structure**: Improve organization with headers, lists, or formatting
+
+Requirements:
+- Keep the existing content intact
+- Add substantial value (aim for 2-3x the original length minimum)
+- Use Obsidian-style [[WikiLinks]] for related concepts
+- Include practical examples or use cases
+- Make it personally useful for knowledge management
+- Use proper markdown formatting
+
+Return ONLY the enhanced note content (including the original content), without any explanation or commentary.
+"""
+
+        try:
+            response = self.model.generate_content(prompt)
+            enhanced_content = response.text.strip()
+            
+            # Remove any markdown code blocks if present
+            if enhanced_content.startswith('```markdown'):
+                enhanced_content = enhanced_content.split('```markdown')[1].split('```')[0].strip()
+            elif enhanced_content.startswith('```'):
+                enhanced_content = enhanced_content.split('```')[1].split('```')[0].strip()
+                
+            return enhanced_content
+            
+        except Exception as e:
+            tqdm.write(f"Error enhancing note: {e}")
+            return content  # Return original content if enhancement fails
+            
+    def save_enhanced_note(self, file_path: Path, enhanced_content: str) -> bool:
+        """Save the enhanced note content to file."""
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(enhanced_content)
+            return True
+        except Exception as e:
+            tqdm.write(f"Error saving enhanced note: {e}")
+            return False
         
     def signal_handler(self, signum, frame):
         """Handle interruption signals (Ctrl-C) gracefully."""
@@ -324,6 +380,7 @@ class ObsidianVaultReviewer:
             "processed_files": list(self.processed_files),
             "deleted_files": [str(f) for f in self.deleted_files],
             "kept_files": [str(f) for f in self.kept_files],
+            "enhanced_files": [str(f) for f in self.enhanced_files],
             "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
             "config": self.config
         }
@@ -352,6 +409,7 @@ class ObsidianVaultReviewer:
             self.processed_files = set(progress_data.get("processed_files", []))
             self.deleted_files = [Path(f) for f in progress_data.get("deleted_files", [])]
             self.kept_files = [Path(f) for f in progress_data.get("kept_files", [])]
+            self.enhanced_files = [Path(f) for f in progress_data.get("enhanced_files", [])]
             self.original_session_start = progress_data.get("session_start", time.strftime("%Y-%m-%d %H:%M:%S"))
             
             # Load configuration (merge with defaults for new settings)
@@ -362,6 +420,7 @@ class ObsidianVaultReviewer:
             print(f"Files already processed: {len(self.processed_files)}")
             print(f"Files deleted: {len(self.deleted_files)}")
             print(f"Files kept: {len(self.kept_files)}")
+            print(f"Files enhanced: {len(self.enhanced_files)}")
             
             return True
             
@@ -613,10 +672,11 @@ Respond in JSON format:
             print("  [k] Keep this file (default)")
             print("  [d] Delete this file")
             print("  [v] View entire note content")
+            print("  [e] Enhance/Expand this note with AI")
             print("  [s] Skip for now")
             print("  [q] Quit the review process")
             
-            print("\nPress a key (k/d/v/s/q) or Enter for default (keep): ", end="", flush=True)
+            print("\nPress a key (k/d/v/s/e/q) or Enter for default (keep): ", end="", flush=True)
             
             try:
                 choice = getch()
@@ -634,6 +694,9 @@ Respond in JSON format:
                 elif choice == 'v':
                     print("v")
                     return 'view'
+                elif choice == 'e':
+                    print("e")
+                    return 'enhance'
                 elif choice == 's':
                     print("s")
                     return 'skip'
@@ -641,7 +704,7 @@ Respond in JSON format:
                     print("q")
                     return 'quit'
                 else:
-                    print(f"{choice} - Invalid choice. Please press k, d, v, s, q, or Enter for default (keep).")
+                    print(f"{choice} - Invalid choice. Please press k, d, v, s, e, q, or Enter for default (keep).")
             except (KeyboardInterrupt, EOFError):
                 print("\nq")
                 return 'quit'
@@ -703,8 +766,10 @@ Respond in JSON format:
             "vault_path": str(self.vault_path),
             "deleted_files": [str(f) for f in self.deleted_files],
             "kept_files": [str(f) for f in self.kept_files],
+            "enhanced_files": [str(f) for f in self.enhanced_files],
             "total_deleted": len(self.deleted_files),
-            "total_kept": len(self.kept_files)
+            "total_kept": len(self.kept_files),
+            "total_enhanced": len(self.enhanced_files)
         }
         
         log_file = self.vault_path / "vault_review_log.json"
@@ -732,6 +797,7 @@ Respond in JSON format:
                 self.processed_files = set()
                 self.deleted_files = []
                 self.kept_files = []
+                self.enhanced_files = []
         
         # Find all markdown files
         md_files = self.find_markdown_files()
@@ -783,6 +849,14 @@ Respond in JSON format:
             for i, file_path in enumerate(md_files, 1):
                 current_position = processed_count + i
                 
+                # Clear screen for clean presentation of each file (including first one)
+                self.clear_screen()
+                
+                # Show progress after clearing screen (show files completed so far)
+                files_completed = processed_count + i - 1
+                tqdm.write(f"Progress: {files_completed}/{total_files} files processed ({files_completed/total_files*100:.1f}%)")
+                tqdm.write("")  # Add blank line for readability
+                
                 # Update progress bar description with current file
                 progress_bar.set_description(f"Processing: {file_path.name[:30]}...")
                 
@@ -790,7 +864,7 @@ Respond in JSON format:
                 content = self.read_file_content(file_path)
                 
                 # Analyze with Gemini
-                tqdm.write(f"\nAnalyzing: {file_path.name}...")
+                tqdm.write(f"Analyzing: {file_path.name}...")
                 analysis = self.analyze_note_relevance(file_path, content)
                 
                 # Check for auto-decision
@@ -822,14 +896,104 @@ Respond in JSON format:
                         elif decision == 'view':
                             self.display_full_content_with_tqdm(file_path, content)
                             # Clear screen after viewing full content and re-display analysis
-                            self.clear_screen()
+                            tqdm.write('\n' * 80)
                             # Show progress after clearing screen
-                            current_progress = processed_count + i
-                            tqdm.write(f"Progress: {current_progress}/{total_files} files processed ({current_progress/total_files*100:.1f}%)")
+                            files_completed = processed_count + i - 1
+                            tqdm.write(f"Progress: {files_completed}/{total_files} files processed ({files_completed/total_files*100:.1f}%)")
                             tqdm.write("")  # Add blank line for readability
                             self.display_analysis_with_tqdm(file_path, analysis, content)
                             # Continue the loop to ask for decision again
                             continue
+                        elif decision == 'enhance':
+                            tqdm.write(f"\n🤖 Enhancing note with AI...")
+                            enhanced_content = self.enhance_note(file_path, content)
+                            
+                            if enhanced_content != content:
+                                # Show the enhanced content
+                                tqdm.write(f"\n{Fore.GREEN}✨ Enhanced Content Preview:{Style.RESET_ALL}")
+                                tqdm.write("="*80)
+                                preview = self.format_markdown_preview(enhanced_content, 800)
+                                tqdm.write(preview)
+                                tqdm.write("="*80)
+                                
+                                # Ask user if they want to save the enhancement
+                                tqdm.write(f"\nEnhanced from {len(content)} to {len(enhanced_content)} characters ({len(enhanced_content)/len(content):.1f}x longer)")
+                                save_enhancement = self.get_yes_no_input("Save this enhanced version?")
+                                
+                                if save_enhancement:
+                                    if self.save_enhanced_note(file_path, enhanced_content):
+                                        tqdm.write(f"{Fore.GREEN}✅ Note enhanced and saved!{Style.RESET_ALL}")
+                                        self.enhanced_files.append(file_path)
+                                        
+                                        # Re-analyze the enhanced note
+                                        tqdm.write(f"\n🔄 Re-analyzing enhanced note...")
+                                        new_analysis = self.analyze_note_relevance(file_path, enhanced_content)
+                                        
+                                        # Clear screen and show new analysis
+                                        tqdm.write('\n' * 80)
+                                        files_completed = processed_count + i - 1
+                                        tqdm.write(f"Progress: {files_completed}/{total_files} files processed ({files_completed/total_files*100:.1f}%)")
+                                        tqdm.write("")
+                                        
+                                        tqdm.write(f"\n{Fore.GREEN}🎉 ENHANCED NOTE RE-ANALYSIS:{Style.RESET_ALL}")
+                                        tqdm.write(f"📈 Score improved from {analysis['score']}/10 to {new_analysis['score']}/10 ({'+' if new_analysis['score'] > analysis['score'] else ''}{new_analysis['score'] - analysis['score']} points)")
+                                        tqdm.write("")
+                                        
+                                        # Show the enhanced note analysis
+                                        self.display_analysis_with_tqdm(file_path, new_analysis, enhanced_content)
+                                        
+                                        # Ask final decision on enhanced note
+                                        enhanced_decision = None
+                                        while True:
+                                            enhanced_decision = self.get_user_decision(new_analysis)
+                                            if enhanced_decision in ['keep', 'delete', 'skip', 'quit']:
+                                                break
+                                            elif enhanced_decision == 'view':
+                                                self.display_full_content_with_tqdm(file_path, enhanced_content)
+                                                tqdm.write('\n' * 80)
+                                                files_completed = processed_count + i - 1
+                                                tqdm.write(f"Progress: {files_completed}/{total_files} files processed ({files_completed/total_files*100:.1f}%)")
+                                                tqdm.write("")
+                                                tqdm.write(f"\n{Fore.GREEN}🎉 ENHANCED NOTE RE-ANALYSIS:{Style.RESET_ALL}")
+                                                tqdm.write(f"📈 Score improved from {analysis['score']}/10 to {new_analysis['score']}/10 ({'+' if new_analysis['score'] > analysis['score'] else ''}{new_analysis['score'] - analysis['score']} points)")
+                                                tqdm.write("")
+                                                self.display_analysis_with_tqdm(file_path, new_analysis, enhanced_content)
+                                                continue
+                                            elif enhanced_decision == 'enhance':
+                                                tqdm.write("Note was already enhanced. Choose keep, delete, or skip.")
+                                                continue
+                                                
+                                        if enhanced_decision == 'keep':
+                                            self.kept_files.append(file_path)
+                                            tqdm.write(f"Enhanced note kept: {file_path}")
+                                        elif enhanced_decision == 'delete':
+                                            if self.delete_file(file_path):
+                                                self.deleted_files.append(file_path)
+                                        elif enhanced_decision == 'skip':
+                                            tqdm.write(f"Enhanced note skipped: {file_path}")
+                                        elif enhanced_decision == 'quit':
+                                            decision = 'quit'
+                                            
+                                        self.processed_files.add(str(file_path))
+                                        self.save_progress()
+                                        break
+                                    else:
+                                        tqdm.write(f"{Fore.RED}❌ Failed to save enhanced note{Style.RESET_ALL}")
+                                        # Continue the loop to ask for decision again
+                                        continue
+                                else:
+                                    tqdm.write("Enhancement cancelled. Original note unchanged.")
+                                    # Clear screen and re-display analysis
+                                    tqdm.write('\n' * 80)
+                                    files_completed = processed_count + i - 1
+                                    tqdm.write(f"Progress: {files_completed}/{total_files} files processed ({files_completed/total_files*100:.1f}%)")
+                                    tqdm.write("")
+                                    self.display_analysis_with_tqdm(file_path, analysis, content)
+                                    continue
+                            else:
+                                tqdm.write(f"{Fore.YELLOW}⚠️ Enhancement failed or no changes made{Style.RESET_ALL}")
+                                # Continue the loop to ask for decision again
+                                continue
                         elif decision == 'delete':
                             if self.delete_file(file_path):
                                 self.deleted_files.append(file_path)
@@ -855,14 +1019,6 @@ Respond in JSON format:
                 if decision == 'quit':
                     break
                     
-                # Clear screen before next file to reduce clutter
-                if decision != 'quit':
-                    self.clear_screen()
-                    # Show progress after clearing screen
-                    current_progress = processed_count + i
-                    tqdm.write(f"Progress: {current_progress}/{total_files} files processed ({current_progress/total_files*100:.1f}%)")
-                    tqdm.write("")  # Add blank line for readability
-                    
                 # Small delay to avoid API rate limits
                 time.sleep(1)
                 
@@ -885,10 +1041,16 @@ Respond in JSON format:
         print("="*60)
         print(f"{Fore.RED}Files deleted: {len(self.deleted_files)}{Style.RESET_ALL}")
         print(f"{Fore.GREEN}Files kept: {len(self.kept_files)}{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}Files enhanced: {len(self.enhanced_files)}{Style.RESET_ALL}")
         print(f"{Fore.CYAN}Total processed: {len(self.deleted_files) + len(self.kept_files)}{Style.RESET_ALL}")
         
+        if self.enhanced_files:
+            print(f"\n{Fore.YELLOW}✨ Enhanced files:{Style.RESET_ALL}")
+            for file_path in self.enhanced_files:
+                print(f"   - {file_path.relative_to(self.vault_path)}")
+        
         if self.deleted_files:
-            print(f"\n{Fore.RED}Deleted files:{Style.RESET_ALL}")
+            print(f"\n{Fore.RED}🗑️ Deleted files:{Style.RESET_ALL}")
             for file_path in self.deleted_files:
                 print(f"   - {file_path.relative_to(self.vault_path)}")
 
