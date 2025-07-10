@@ -51,6 +51,9 @@ class ObsidianVaultReviewer:
         self.original_session_start = time.strftime("%Y-%m-%d %H:%M:%S")  # Track session start time
         self.setup_signal_handlers()  # Handle Ctrl-C gracefully
         
+        # Save this vault path as the most recent
+        self.save_last_used_vault_path(vault_path)
+        
         # Configuration for auto-decisions
         self.config = {
             "auto_keep_enabled": True,
@@ -436,6 +439,31 @@ Return ONLY the enhanced note content (including the original content), without 
                 print("Progress file cleaned up.")
         except Exception as e:
             print(f"Warning: Failed to cleanup progress file: {e}")
+            
+    def save_last_used_vault_path(self, vault_path: str):
+        """Save the most recently used vault path."""
+        config_file = Path.home() / ".obsidian_vault_reviewer_config.json"
+        try:
+            config_data = {"last_vault_path": str(vault_path)}
+            with open(config_file, 'w') as f:
+                json.dump(config_data, f)
+        except Exception as e:
+            # Silently fail - this is just a convenience feature
+            pass
+            
+    @staticmethod
+    def get_last_used_vault_path() -> Optional[str]:
+        """Get the most recently used vault path."""
+        config_file = Path.home() / ".obsidian_vault_reviewer_config.json"
+        try:
+            if config_file.exists():
+                with open(config_file, 'r') as f:
+                    config_data = json.load(f)
+                return config_data.get("last_vault_path")
+        except Exception as e:
+            # Silently fail - this is just a convenience feature
+            pass
+        return None
         
     def find_markdown_files(self) -> List[Path]:
         """Recursively find all markdown files in the vault."""
@@ -1088,17 +1116,28 @@ def main():
             print("API key is required!")
             sys.exit(1)
     
-    # Get vault path (default to current directory)
+    # Get vault path (suggest last used path or current directory)
+    last_used_path = ObsidianVaultReviewer.get_last_used_vault_path()
+    
+    if last_used_path and os.path.exists(last_used_path):
+        # Show last used path as default
+        default_display = f"last used: {last_used_path}"
+        default_path = last_used_path
+    else:
+        # Fall back to current directory
+        default_display = "current directory"
+        default_path = os.getcwd()
+    
     while True:
-        vault_path = input(f"Enter vault path (default: current directory): ").strip()
+        vault_path = input(f"Enter vault path (default: {default_display}): ").strip()
         if not vault_path:
-            vault_path = os.getcwd()
+            vault_path = default_path
             
         if os.path.exists(vault_path):
             break
         else:
             print(f"❌ Vault path does not exist: {vault_path}")
-            print("Please enter a valid directory path or press Enter for current directory.")
+            print(f"Please enter a valid directory path or press Enter for default ({default_display}).")
             continue
         
     # Create reviewer and start
