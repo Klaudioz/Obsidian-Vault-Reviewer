@@ -170,22 +170,36 @@ Respond in JSON format:
             print("\nWhat would you like to do?")
             print("  [k] Keep this file")
             print("  [d] Delete this file")
+            print("  [v] View entire note content")
             print("  [s] Skip for now")
             print("  [q] Quit the review process")
             
-            choice = input("\nEnter your choice (k/d/s/q): ").lower().strip()
+            choice = input("\nEnter your choice (k/d/v/s/q): ").lower().strip()
             
             if choice in ['k', 'keep']:
                 return 'keep'
             elif choice in ['d', 'delete']:
                 return 'delete'
+            elif choice in ['v', 'view']:
+                return 'view'
             elif choice in ['s', 'skip']:
                 return 'skip'
             elif choice in ['q', 'quit']:
                 return 'quit'
             else:
-                print("Invalid choice. Please enter k, d, s, or q.")
+                print("Invalid choice. Please enter k, d, v, s, or q.")
                 
+    def display_full_content(self, file_path: Path, content: str):
+        """Display the full content of a note."""
+        print("\n" + "="*80)
+        print(f"FULL CONTENT: {file_path.name}")
+        print(f"Path: {file_path.relative_to(self.vault_path)}")
+        print("="*80)
+        print(content)
+        print("="*80)
+        print("End of file content")
+        print("="*80)
+        
     def delete_file(self, file_path: Path) -> bool:
         """Delete a file and return success status."""
         try:
@@ -245,20 +259,32 @@ Respond in JSON format:
             # Display results
             self.display_analysis(file_path, analysis, content)
             
-            # Get user decision
-            decision = self.get_user_decision(analysis)
-            
+            # Get user decision (loop until they make a final choice)
+            while True:
+                decision = self.get_user_decision(analysis)
+                
+                if decision == 'quit':
+                    print("\nReview process stopped by user.")
+                    break
+                elif decision == 'view':
+                    self.display_full_content(file_path, content)
+                    # Continue the loop to ask for decision again
+                    continue
+                elif decision == 'delete':
+                    if self.delete_file(file_path):
+                        self.deleted_files.append(file_path)
+                    break
+                elif decision == 'keep':
+                    self.kept_files.append(file_path)
+                    print(f"Kept: {file_path}")
+                    break
+                elif decision == 'skip':
+                    print(f"Skipped: {file_path}")
+                    break
+                    
+            # Break out of outer loop if user chose quit
             if decision == 'quit':
-                print("\nReview process stopped by user.")
                 break
-            elif decision == 'delete':
-                if self.delete_file(file_path):
-                    self.deleted_files.append(file_path)
-            elif decision == 'keep':
-                self.kept_files.append(file_path)
-                print(f"Kept: {file_path}")
-            elif decision == 'skip':
-                print(f"Skipped: {file_path}")
                 
             # Small delay to avoid API rate limits
             time.sleep(1)
