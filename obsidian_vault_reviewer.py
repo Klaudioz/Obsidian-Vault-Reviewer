@@ -9,10 +9,32 @@ import sys
 import json
 import time
 import signal
+import re
 from pathlib import Path
 from typing import List, Dict, Optional
 import google.generativeai as genai
 from colorama import init, Fore, Style
+from tqdm import tqdm
+
+# Cross-platform single character input
+try:
+    # Windows
+    import msvcrt
+    def getch():
+        return msvcrt.getch().decode('utf-8').lower()
+except ImportError:
+    # Unix/Linux/macOS
+    import tty
+    import termios
+    def getch():
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(sys.stdin.fileno())
+            ch = sys.stdin.read(1).lower()
+            return ch
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 class ObsidianVaultReviewer:
     def __init__(self, api_key: str, vault_path: str):
@@ -49,6 +71,135 @@ class ObsidianVaultReviewer:
             print(f"❌ Failed to save progress: {e}")
             print("Some progress may be lost.")
         sys.exit(0)
+        
+    def format_markdown_preview(self, content: str, max_length: int = 600) -> str:
+        """Format markdown content for a readable preview."""
+        lines = content.split('\n')
+        formatted_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            # Handle headers
+            if line.startswith('#'):
+                level = len(line) - len(line.lstrip('#'))
+                header_text = line.lstrip('# ').strip()
+                # Apply bold and italic formatting to header text
+                formatted_header = re.sub(r'\*\*([^*]+)\*\*', rf'{Style.BRIGHT}\1{Style.NORMAL}', header_text)
+                formatted_header = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', rf'\033[3m\1\033[0m', formatted_header)
+                if level == 1:
+                    formatted_lines.append(f"\n📋 {formatted_header}")
+                elif level == 2:
+                    formatted_lines.append(f"\n📌 {formatted_header}")
+                else:
+                    formatted_lines.append(f"\n• {formatted_header}")
+                    
+            # Handle tables
+            elif '|' in line and line.count('|') >= 2:
+                # Parse table row
+                cells = [cell.strip() for cell in line.split('|')[1:-1]]  # Remove empty first/last
+                if len(cells) > 0:
+                    # Skip table separator lines
+                    if not all(c in '-:| ' for c in line):
+                        # Apply bold formatting to cells
+                        formatted_cells = []
+                        for cell in cells:
+                            formatted_cell = re.sub(r'\*\*([^*]+)\*\*', rf'{Style.BRIGHT}\1{Style.NORMAL}', cell)
+                            formatted_cell = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', rf'\033[3m\1\033[0m', formatted_cell)
+                            formatted_cells.append(formatted_cell)
+                        formatted_lines.append(f"  {' • '.join(formatted_cells)}")
+                        
+            # Handle lists
+            elif line.startswith(('- ', '* ', '+ ')):
+                list_content = re.sub(r'\*\*([^*]+)\*\*', rf'{Style.BRIGHT}\1{Style.NORMAL}', line[2:])
+                list_content = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', rf'\033[3m\1\033[0m', list_content)
+                formatted_lines.append(f"  • {list_content}")
+            elif re.match(r'^\d+\. ', line):
+                list_content = re.sub(r'\*\*([^*]+)\*\*', rf'{Style.BRIGHT}\1{Style.NORMAL}', line)
+                list_content = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', rf'\033[3m\1\033[0m', list_content)
+                formatted_lines.append(f"  {list_content}")
+                
+            # Handle code blocks (skip content but show indicator)
+            elif line.startswith('```'):
+                formatted_lines.append("  [Code Block]")
+                
+            # Handle regular text
+            else:
+                # Remove markdown links and formatting, but preserve bold
+                cleaned = re.sub(r'\[\[([^\]]+)\]\]', r'→\1', line)  # Obsidian links
+                cleaned = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', cleaned)  # Regular links
+                cleaned = re.sub(r'\*\*([^*]+)\*\*', rf'{Style.BRIGHT}\1{Style.NORMAL}', cleaned)  # Bold
+                cleaned = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', rf'\033[3m\1\033[0m', cleaned)  # Italic (true italics)
+                if cleaned.strip():
+                    formatted_lines.append(f"  {cleaned}")
+        
+        # Join and truncate
+        preview_text = '\n'.join(formatted_lines)
+        if len(preview_text) > max_length:
+            preview_text = preview_text[:max_length] + "..."
+            
+        return preview_text
+
+    def format_markdown_table(self, content: str) -> str:
+        """Format markdown tables for better readability."""
+        lines = content.split('\n')
+        formatted_lines = []
+        in_table = False
+        
+        for line in lines:
+            if '|' in line and line.count('|') >= 2:
+                # This looks like a table row
+                cells = [cell.strip() for cell in line.split('|')[1:-1]]
+                
+                # Skip separator lines
+                if all(c in '-:| ' for c in line):
+                    if not in_table:
+                        formatted_lines.append("  " + "─" * 60)
+                    in_table = True
+                    continue
+                    
+                if len(cells) > 0:
+                    # Apply bold formatting to cells and format table row with better spacing
+                    formatted_cells = []
+                    for cell in cells:
+                        # Apply bold and italic formatting to cell content
+                        formatted_cell = re.sub(r'\*\*([^*]+)\*\*', rf'{Style.BRIGHT}\1{Style.NORMAL}', cell)
+                        formatted_cell = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', rf'\033[3m\1\033[0m', formatted_cell)
+                        # Calculate visual width (excluding ANSI codes) for proper spacing
+                        visual_width = len(re.sub(r'\x1b\[[0-9;]*m', '', formatted_cell))
+                        padding = max(0, 15 - visual_width)
+                        formatted_cells.append(formatted_cell + ' ' * padding)
+                    
+                    formatted_row = "  │ " + " │ ".join(formatted_cells) + " │"
+                    formatted_lines.append(formatted_row)
+                    in_table = True
+            else:
+                if in_table:
+                    formatted_lines.append("  " + "─" * 60)
+                    in_table = False
+                formatted_lines.append(line)
+                
+        if in_table:
+            formatted_lines.append("  " + "─" * 60)
+            
+        return '\n'.join(formatted_lines)
+        
+    def make_clickable_path(self, file_path: Path) -> str:
+        """Create a clickable file path that opens in Obsidian or default application."""
+        # Get absolute path for file:// URL
+        abs_path = file_path.resolve()
+        
+        # Try to create Obsidian URL (obsidian://open?file=...)
+        rel_path = file_path.relative_to(self.vault_path)
+        vault_name = self.vault_path.name
+        obsidian_url = f"obsidian://open?vault={vault_name}&file={rel_path}"
+        
+        # Create clickable link with both Obsidian and file URLs as fallback
+        clickable = f"\033]8;;{obsidian_url}\033\\{file_path.name}\033]8;;\033\\"
+        
+        return clickable
         
     def save_progress(self):
         """Save current progress to file."""
@@ -231,9 +382,10 @@ Respond in JSON format:
     def display_analysis(self, file_path: Path, analysis: Dict, content: str):
         """Display the analysis results to the user."""
         print("\n" + "="*80)
-        print(f"File: {file_path.name}")
-        print(f"Path: {file_path.relative_to(self.vault_path)}")
-        print(f"Size: {len(content)} characters")
+        clickable_name = self.make_clickable_path(file_path)
+        print(f"📄 File: {Fore.CYAN}{clickable_name}{Style.RESET_ALL}")
+        print(f"📁 Path: {file_path.relative_to(self.vault_path)}")
+        print(f"📊 Size: {len(content):,} characters")
         
         # Color-coded relevance score
         score = analysis['score']
@@ -248,60 +400,150 @@ Respond in JSON format:
         else:
             color = Fore.LIGHTGREEN_EX
             
-        print(f"Relevance Score: {color}{score}/10{Style.RESET_ALL}")
+        print(f"⭐ Relevance Score: {color}{score}/10{Style.RESET_ALL}")
         
-        # Show preview of content (larger and above reasoning)
-        preview = content[:800].replace('\n', ' ')
-        if len(content) > 800:
-            preview += "..."
-        print(f"Preview: {preview}")
-        print(f"AI Reasoning: {analysis['reasoning']}")
+        # Show formatted preview
+        print(f"\n{Fore.LIGHTBLUE_EX}📖 Preview:{Style.RESET_ALL}")
+        preview = self.format_markdown_preview(content, 600)
+        print(preview)
+        
+        print(f"\n{Fore.LIGHTMAGENTA_EX}🤖 AI Reasoning:{Style.RESET_ALL}")
+        print(f"  {analysis['reasoning']}")
         
         # Color-coded AI recommendation
         recommendation = analysis['recommendation'].upper()
         if recommendation == 'DELETE':
             rec_color = Fore.RED
+            emoji = "🗑️"
         else:
             rec_color = Fore.GREEN
+            emoji = "✅"
             
-        print(f"AI Recommendation: {rec_color}{recommendation}{Style.RESET_ALL}")
+        print(f"\n{emoji} AI Recommendation: {rec_color}{recommendation}{Style.RESET_ALL}")
         print("="*80)
+        
+    def display_analysis_with_tqdm(self, file_path: Path, analysis: Dict, content: str):
+        """Display the analysis results using tqdm.write to avoid interfering with progress bar."""
+        tqdm.write("\n" + "="*80)
+        clickable_name = self.make_clickable_path(file_path)
+        tqdm.write(f"📄 File: {Fore.CYAN}{clickable_name}{Style.RESET_ALL}")
+        tqdm.write(f"📁 Path: {file_path.relative_to(self.vault_path)}")
+        tqdm.write(f"📊 Size: {len(content):,} characters")
+        
+        # Color-coded relevance score
+        score = analysis['score']
+        if score <= 2:
+            color = Fore.RED
+        elif score <= 4:
+            color = Fore.YELLOW
+        elif score <= 6:
+            color = Fore.CYAN
+        elif score <= 8:
+            color = Fore.GREEN
+        else:
+            color = Fore.LIGHTGREEN_EX
+            
+        tqdm.write(f"⭐ Relevance Score: {color}{score}/10{Style.RESET_ALL}")
+        
+        # Show formatted preview
+        tqdm.write(f"\n{Fore.LIGHTBLUE_EX}📖 Preview:{Style.RESET_ALL}")
+        preview = self.format_markdown_preview(content, 600)
+        tqdm.write(preview)
+        
+        tqdm.write(f"\n{Fore.LIGHTMAGENTA_EX}🤖 AI Reasoning:{Style.RESET_ALL}")
+        tqdm.write(f"  {analysis['reasoning']}")
+        
+        # Color-coded AI recommendation
+        recommendation = analysis['recommendation'].upper()
+        if recommendation == 'DELETE':
+            rec_color = Fore.RED
+            emoji = "🗑️"
+        else:
+            rec_color = Fore.GREEN
+            emoji = "✅"
+            
+        tqdm.write(f"\n{emoji} AI Recommendation: {rec_color}{recommendation}{Style.RESET_ALL}")
+        tqdm.write("="*80)
         
     def get_user_decision(self, analysis: Dict) -> str:
         """Get user decision on whether to keep or delete the file."""
         while True:
             print("\nWhat would you like to do?")
-            print("  [k] Keep this file")
+            print("  [k] Keep this file (default)")
             print("  [d] Delete this file")
             print("  [v] View entire note content")
             print("  [s] Skip for now")
             print("  [q] Quit the review process")
             
-            choice = input("\nEnter your choice (k/d/v/s/q): ").lower().strip()
+            print("\nPress a key (k/d/v/s/q) or Enter for default (keep): ", end="", flush=True)
             
-            if choice in ['k', 'keep']:
-                return 'keep'
-            elif choice in ['d', 'delete']:
-                return 'delete'
-            elif choice in ['v', 'view']:
-                return 'view'
-            elif choice in ['s', 'skip']:
-                return 'skip'
-            elif choice in ['q', 'quit']:
+            try:
+                choice = getch()
+                
+                # Handle Enter key (newline)
+                if choice in ['\r', '\n', '']:
+                    print("k (default)")
+                    return 'keep'
+                elif choice == 'k':
+                    print("k")
+                    return 'keep'
+                elif choice == 'd':
+                    print("d")
+                    return 'delete'
+                elif choice == 'v':
+                    print("v")
+                    return 'view'
+                elif choice == 's':
+                    print("s")
+                    return 'skip'
+                elif choice == 'q':
+                    print("q")
+                    return 'quit'
+                else:
+                    print(f"{choice} - Invalid choice. Please press k, d, v, s, q, or Enter for default (keep).")
+            except (KeyboardInterrupt, EOFError):
+                print("\nq")
                 return 'quit'
-            else:
-                print("Invalid choice. Please enter k, d, v, s, or q.")
                 
     def display_full_content(self, file_path: Path, content: str):
-        """Display the full content of a note."""
+        """Display the full content of a note with better formatting."""
         print("\n" + "="*80)
-        print(f"FULL CONTENT: {file_path.name}")
-        print(f"Path: {file_path.relative_to(self.vault_path)}")
+        clickable_name = self.make_clickable_path(file_path)
+        print(f"📄 FULL CONTENT: {Fore.CYAN}{clickable_name}{Style.RESET_ALL}")
+        print(f"📁 Path: {file_path.relative_to(self.vault_path)}")
+        print(f"📊 Size: {len(content):,} characters")
         print("="*80)
-        print(content)
+        
+        # Format the content for better readability
+        formatted_content = self.format_markdown_table(content)
+        # Apply bold and italic formatting to the entire content
+        formatted_content = re.sub(r'\*\*([^*]+)\*\*', rf'{Style.BRIGHT}\1{Style.NORMAL}', formatted_content)
+        formatted_content = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', rf'\033[3m\1\033[0m', formatted_content)
+        print(formatted_content)
+        
         print("="*80)
-        print("End of file content")
+        print(f"{Fore.GREEN}📝 End of file content{Style.RESET_ALL}")
         print("="*80)
+        
+    def display_full_content_with_tqdm(self, file_path: Path, content: str):
+        """Display the full content of a note using tqdm.write."""
+        tqdm.write("\n" + "="*80)
+        clickable_name = self.make_clickable_path(file_path)
+        tqdm.write(f"📄 FULL CONTENT: {Fore.CYAN}{clickable_name}{Style.RESET_ALL}")
+        tqdm.write(f"📁 Path: {file_path.relative_to(self.vault_path)}")
+        tqdm.write(f"📊 Size: {len(content):,} characters")
+        tqdm.write("="*80)
+        
+        # Format the content for better readability
+        formatted_content = self.format_markdown_table(content)
+        # Apply bold and italic formatting to the entire content
+        formatted_content = re.sub(r'\*\*([^*]+)\*\*', rf'{Style.BRIGHT}\1{Style.NORMAL}', formatted_content)
+        formatted_content = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', rf'\033[3m\1\033[0m', formatted_content)
+        tqdm.write(formatted_content)
+        
+        tqdm.write("="*80)
+        tqdm.write(f"{Fore.GREEN}📝 End of file content{Style.RESET_ALL}")
+        tqdm.write("="*80)
         
     def delete_file(self, file_path: Path) -> bool:
         """Delete a file and return success status."""
@@ -382,56 +624,75 @@ Respond in JSON format:
         # Save initial progress to create the file
         self.save_progress()
         
-        for i, file_path in enumerate(md_files, 1):
-            current_position = processed_count + i
-            print(f"\nProgress: {current_position}/{total_files} files")
-            
-            # Read file content
-            content = self.read_file_content(file_path)
-            
-            # Analyze with Gemini
-            print(f"Analyzing: {file_path.name}...")
-            analysis = self.analyze_note_relevance(file_path, content)
-            
-            # Display results
-            self.display_analysis(file_path, analysis, content)
-            
-            # Get user decision (loop until they make a final choice)
-            while True:
-                decision = self.get_user_decision(analysis)
+        # Create progress bar
+        progress_bar = tqdm(
+            total=total_files,
+            desc="Reviewing files",
+            initial=processed_count,
+            unit="files",
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} files [{elapsed}<{remaining}, {rate_fmt}]"
+        )
+        
+        try:
+            for i, file_path in enumerate(md_files, 1):
+                current_position = processed_count + i
                 
+                # Update progress bar description with current file
+                progress_bar.set_description(f"Processing: {file_path.name[:30]}...")
+                
+                # Read file content
+                content = self.read_file_content(file_path)
+                
+                # Analyze with Gemini
+                tqdm.write(f"\nAnalyzing: {file_path.name}...")
+                analysis = self.analyze_note_relevance(file_path, content)
+                
+                # Display results using tqdm.write to avoid interfering with progress bar
+                self.display_analysis_with_tqdm(file_path, analysis, content)
+                
+                # Get user decision (loop until they make a final choice)
+                while True:
+                    decision = self.get_user_decision(analysis)
+                    
+                    if decision == 'quit':
+                        tqdm.write("\nReview process stopped by user.")
+                        tqdm.write("Progress has been saved. You can continue later by running the script again.")
+                        break
+                    elif decision == 'view':
+                        self.display_full_content_with_tqdm(file_path, content)
+                        # Continue the loop to ask for decision again
+                        continue
+                    elif decision == 'delete':
+                        if self.delete_file(file_path):
+                            self.deleted_files.append(file_path)
+                        self.processed_files.add(str(file_path))
+                        self.save_progress()  # Save progress after each file
+                        break
+                    elif decision == 'keep':
+                        self.kept_files.append(file_path)
+                        tqdm.write(f"Kept: {file_path}")
+                        self.processed_files.add(str(file_path))
+                        self.save_progress()  # Save progress after each file
+                        break
+                    elif decision == 'skip':
+                        tqdm.write(f"Skipped: {file_path}")
+                        self.processed_files.add(str(file_path))
+                        self.save_progress()  # Save progress after each file
+                        break
+                        
+                # Update progress bar
+                progress_bar.update(1)
+                        
+                # Break out of outer loop if user chose quit
                 if decision == 'quit':
-                    print("\nReview process stopped by user.")
-                    print("Progress has been saved. You can continue later by running the script again.")
-                    break
-                elif decision == 'view':
-                    self.display_full_content(file_path, content)
-                    # Continue the loop to ask for decision again
-                    continue
-                elif decision == 'delete':
-                    if self.delete_file(file_path):
-                        self.deleted_files.append(file_path)
-                    self.processed_files.add(str(file_path))
-                    self.save_progress()  # Save progress after each file
-                    break
-                elif decision == 'keep':
-                    self.kept_files.append(file_path)
-                    print(f"Kept: {file_path}")
-                    self.processed_files.add(str(file_path))
-                    self.save_progress()  # Save progress after each file
-                    break
-                elif decision == 'skip':
-                    print(f"Skipped: {file_path}")
-                    self.processed_files.add(str(file_path))
-                    self.save_progress()  # Save progress after each file
                     break
                     
-            # Break out of outer loop if user chose quit
-            if decision == 'quit':
-                break
+                # Small delay to avoid API rate limits
+                time.sleep(1)
                 
-            # Small delay to avoid API rate limits
-            time.sleep(1)
+        finally:
+            # Close progress bar
+            progress_bar.close()
             
         # Show summary and cleanup
         self.show_summary()
