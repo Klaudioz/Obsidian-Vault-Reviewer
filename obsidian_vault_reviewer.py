@@ -942,6 +942,22 @@ Respond in JSON format:
                                         # Show the enhanced note analysis
                                         self.display_analysis_with_tqdm(file_path, new_analysis, enhanced_content)
                                         
+                                        # Check for auto-decision on enhanced note
+                                        enhanced_auto_decision = self.check_auto_decision(file_path, new_analysis)
+                                        
+                                        if enhanced_auto_decision == "auto_keep":
+                                            self.kept_files.append(file_path)
+                                            tqdm.write(f"Enhanced note auto-kept: {file_path}")
+                                            self.processed_files.add(str(file_path))
+                                            self.save_progress()
+                                            break
+                                        elif enhanced_auto_decision == "auto_delete":
+                                            if self.delete_file(file_path):
+                                                self.deleted_files.append(file_path)
+                                            self.processed_files.add(str(file_path))
+                                            self.save_progress()
+                                            break
+                                        
                                         # Ask final decision on enhanced note
                                         enhanced_decision = None
                                         while True:

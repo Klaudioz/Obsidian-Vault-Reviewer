@@ -10,7 +10,7 @@ An AI-powered tool to help you clean up and organize your Obsidian vault by anal
 - ⚡ **Single-Key Interface**: Fast review with k/d/v/s/e/q keys - no Enter needed!
 - 📊 **Session Continuity**: Resume interrupted sessions exactly where you left off
 - 🔗 **WikiLink Aware**: Heavily favors notes with [[internal links]] and #tags
-- 🖥️ **Clean Interface**: Auto-clearing screen shows only current note analysis
+- 🖥️ **Clean Interface**: Auto-clearing screen shows only current note analysis (with tqdm-compatible display)
 - 🎯 **Smart Scoring**: Enhanced 0-10 scoring system emphasizing personal value
 - 🔐 **Security-Conscious**: Protects notes containing API keys, passwords, or credentials
 - 📋 **Progress Management**: Visual progress bars, graceful interruption handling
@@ -92,6 +92,7 @@ The most innovative feature - transform sparse notes into valuable knowledge ass
 - **Includes Examples**: Practical use cases and real-world applications
 - **Improves Structure**: Better formatting, headers, and organization
 - **Automatic Re-evaluation**: Enhanced notes get fresh AI analysis
+- **Smart Auto-Decisions**: Re-analyzed notes trigger auto-keep/delete if they meet thresholds
 - **Score Tracking**: See immediate improvements (e.g., 5/10 → 8/10)
 
 ### **Enhancement Workflow:**
@@ -100,7 +101,8 @@ The most innovative feature - transform sparse notes into valuable knowledge ass
 3. **Preview Enhanced Content** before deciding to save
 4. **Choose to Save** or cancel enhancement
 5. **Automatic Re-analysis** of enhanced note with new scoring
-6. **Final Decision** on enhanced note (keep/delete/skip)
+6. **Auto-Decision Check** - If enhanced note meets auto-keep/delete thresholds, automatically applied
+7. **Manual Decision** - Only if auto-decision not triggered (keep/delete/skip)
 
 ### **Perfect For:**
 - Basic definitions that need depth
@@ -286,8 +288,11 @@ Save this enhanced version? (y/n): y
 ✅ AI Recommendation: KEEP
 ================================================================================
 
-Press a key (k/d/v/s/e/q) or Enter for default (keep): k
-Enhanced note kept: ARN.md
+🤖 AUTO-KEEP: Score 8/7+ → Automatically kept
+📄 ARN.md
+💡 This enhanced note now provides comprehensive coverage of ARNs...
+
+Enhanced note auto-kept: ARN.md
 ```
 
 ## 📊 Progress Tracking & Session Management
@@ -340,8 +345,15 @@ File names become clickable terminal links that open directly in Obsidian:
 - Adds practical examples, use cases, and [[WikiLinks]]
 - Preview enhanced content before saving
 - **Automatic re-evaluation** - Enhanced notes get fresh AI analysis and scoring
+- **Smart auto-decisions** - Enhanced notes automatically kept/deleted if they meet thresholds
 - See immediate score improvements (e.g., 5/10 → 8/10)
 - Perfect for turning basic definitions into valuable references
+
+### **🛠️ Technical Improvements & Interface**
+- **Display System**: Fixed graphical glitches when using progress bars with screen clearing
+- **Enhanced Auto-Decisions**: Re-analyzed notes automatically trigger keep/delete based on new scores
+- **Smooth Interface**: Screen clearing now works seamlessly with progress bar display
+- **Progress Bar Compatibility**: Terminal display optimized for consistent visual experience
 
 ## 🎯 Best Practices
 
@@ -363,8 +375,9 @@ File names become clickable terminal links that open directly in Obsidian:
 1. **Target Sparse Notes**: Perfect for basic definitions, concept stubs, short explanations
 2. **Preview First**: Always review enhanced content before saving
 3. **Watch Score Improvements**: Enhanced notes typically jump 2-4 points in scoring
-4. **Build Your Knowledge**: Turn scattered notes into comprehensive references
-5. **Create Connections**: AI adds relevant [[WikiLinks]] to build your knowledge graph
+4. **Trust Auto-Decisions**: Enhanced notes scoring 7+ auto-kept, 2- auto-deleted (if enabled)
+5. **Build Your Knowledge**: Turn scattered notes into comprehensive references
+6. **Create Connections**: AI adds relevant [[WikiLinks]] to build your knowledge graph
 
 ### **Performance Tips:**
 1. **Start with Auto-Keep**: Configure threshold to automatically keep high-value notes
@@ -451,6 +464,12 @@ export GEMINI_API_KEY="your-actual-key-here"
 - AI enhancement quality depends on original content having some substance
 - Very short notes (< 20 characters) may not enhance well
 - Technical accuracy depends on AI knowledge - always review enhanced content
+
+**Interface Issues:**
+- Fixed: Graphical glitches when viewing full content or enhancing notes
+- Fixed: Progress bar display conflicts with screen clearing
+- Terminal display now works smoothly with all review actions
+- Auto-decisions work correctly for re-analyzed enhanced notes
 
 ## 📄 License
 
