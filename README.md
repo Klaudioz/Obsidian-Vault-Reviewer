@@ -16,6 +16,9 @@ An AI-powered tool to help you clean up and organize your Obsidian vault by anal
 - 📋 **Progress Management**: Visual progress bars, graceful interruption handling
 - 🖱️ **Clickable Paths**: File names link directly to Obsidian for easy access
 
+## Demo
+https://github.com/user-attachments/assets/05a46ecd-9822-47e3-a73a-c9fef3392d51
+
 ## 🎯 Enhanced Scoring System
 
 The AI uses a sophisticated "second brain" scoring system that heavily favors personal knowledge:
