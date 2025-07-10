@@ -55,6 +55,8 @@ class ObsidianVaultReviewer:
         self.deleted_files = []
         self.kept_files = []
         self.enhanced_files = []
+        self.atomic_notes_created = []  # Track atomic notes created during enhancement
+        self.atomic_notes_reviewed = []  # Track atomic notes that were also reviewed in same session
         self.progress_file = self.vault_path / ".obsidian_review_progress.json"
         self.processed_files = set()  # Track which files have been processed
         self.original_session_start = time.strftime("%Y-%m-%d %H:%M:%S")  # Track session start time
@@ -270,20 +272,237 @@ class ObsidianVaultReviewer:
             
         return None
         
-    def enhance_note(self, file_path: Path, content: str) -> str:
+    def scan_vault_for_existing_notes(self) -> Dict[str, str]:
         """
-        Use Gemini to enhance a sparse note by adding meaningful content.
+        Scan the entire vault to build a map of existing note titles to their file paths.
+        This enables the AI to reference existing notes with proper [[WikiLinks]].
+        """
+        existing_notes = {}
         
-        SAFETY GUARANTEE: This method will NEVER delete or modify existing content.
-        It only adds new content. If the AI accidentally removes any original content,
-        the safety validation will catch it and return the original content unchanged.
+        try:
+            # Find all markdown files in the vault
+            md_files = list(self.vault_path.rglob("*.md"))
+            
+            for file_path in md_files:
+                # Use the filename without extension as the note title
+                note_title = file_path.stem
+                # Store the relative path from vault root
+                relative_path = file_path.relative_to(self.vault_path)
+                existing_notes[note_title] = str(relative_path)
+                
+                # Also read the first line to check for alternate titles (like # Header)
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        first_line = f.readline().strip()
+                        if first_line.startswith('#'):
+                            # Extract header text as alternate title
+                            header_title = first_line.lstrip('#').strip()
+                            if header_title and header_title != note_title:
+                                existing_notes[header_title] = str(relative_path)
+                except Exception:
+                    # If we can't read the file, skip alternate title
+                    pass
+                    
+        except Exception as e:
+            tqdm.write(f"Warning: Failed to scan vault for existing notes: {e}")
+            
+        return existing_notes
         
-        Returns:
-            Enhanced content with original content preserved + new additions,
-            or original content unchanged if enhancement fails or safety check fails.
+    def identify_atomic_concepts(self, content: str, existing_notes: Dict[str, str]) -> List[str]:
+        """
+        Use AI to identify concepts in the content that should be atomic notes.
+        """
+        # Create a list of existing note titles for the AI to reference
+        existing_titles = list(existing_notes.keys())[:50]  # Limit to avoid token overflow
+        existing_titles_str = "\n".join([f"- {title}" for title in existing_titles])
+        
+        prompt = f"""
+Analyze this note content and identify concepts that should be atomic notes in a second brain/Zettelkasten system.
+
+CONTENT TO ANALYZE:
+{content[:1500]}
+
+EXISTING NOTES IN VAULT (for reference):
+{existing_titles_str}
+
+ATOMIC NOTE PRINCIPLES:
+- Each note should contain ONE concept or idea
+- Notes should be understandable on their own
+- Notes should be linkable and reusable
+- Focus on concepts that appear multiple times or are foundational
+
+IDENTIFY ATOMIC CONCEPTS FROM THE CONTENT:
+1. Look for key concepts, terms, or ideas mentioned
+2. Consider what concepts could be split out into separate notes
+3. Think about what supporting concepts would be useful
+4. Consider both explicit concepts (named) and implicit ones (ideas discussed)
+
+Return a JSON list of atomic concept titles that should exist as separate notes:
+{{
+    "atomic_concepts": [
+        "Concept Name 1",
+        "Concept Name 2", 
+        "Concept Name 3"
+    ]
+}}
+
+IMPORTANT:
+- Focus on 3-5 key concepts maximum
+- Use clear, descriptive titles (2-4 words)
+- Don't suggest concepts that already exist in the vault
+- Prioritize concepts that would be useful across multiple notes
+- Think about the "one idea per note" principle
+"""
+
+        try:
+            response = self.handle_rate_limiting(self.model.generate_content, prompt)
+            response_text = response.text.strip()
+            
+            # Clean up JSON response
+            if response_text.startswith('```json'):
+                response_text = response_text.split('```json')[1].split('```')[0]
+            elif response_text.startswith('```'):
+                response_text = response_text.split('```')[1].split('```')[0]
+            
+            response_text = response_text.strip()
+            
+            # Parse JSON
+            result = json.loads(response_text)
+            return result.get('atomic_concepts', [])
+            
+        except Exception as e:
+            tqdm.write(f"Warning: Failed to identify atomic concepts: {e}")
+            return []
+            
+    def create_atomic_note(self, concept_title: str, original_content: str, file_context: str) -> str:
+        """
+        Create content for a new atomic note based on a concept.
         """
         prompt = f"""
-You are helping improve a sparse Obsidian note in a personal knowledge management system.
+Create content for a new atomic note in a second brain/Zettelkasten system.
+
+ATOMIC NOTE TITLE: {concept_title}
+
+CONTEXT (from original note):
+{original_content[:1000]}
+
+ORIGINAL NOTE CONTEXT: {file_context}
+
+CREATE ATOMIC NOTE CONTENT:
+- Focus on ONE concept: {concept_title}
+- Make it understandable on its own
+- Include practical information, examples, or definitions
+- Add relevant context for personal knowledge management
+- Use clear structure with headers
+- Aim for 150-400 words (atomic but comprehensive)
+- Include related concepts using [[WikiLinks]] where appropriate
+
+ATOMIC NOTE PRINCIPLES:
+- Autonomy: Should be understandable without other notes
+- Atomicity: Contains only one main idea or concept
+- Linkability: Can be connected to other notes
+- Usefulness: Valuable for future reference
+
+Return ONLY the note content (no JSON, no explanations):
+"""
+
+        try:
+            response = self.handle_rate_limiting(self.model.generate_content, prompt)
+            content = response.text.strip()
+            
+            # Remove markdown code blocks if present
+            if content.startswith('```markdown'):
+                content = content.split('```markdown')[1].split('```')[0].strip()
+            elif content.startswith('```'):
+                content = content.split('```')[1].split('```')[0].strip()
+                
+            return content
+            
+        except Exception as e:
+            tqdm.write(f"Warning: Failed to create atomic note for {concept_title}: {e}")
+            return f"# {concept_title}\n\n*Concept extracted from {file_context}*"
+            
+    def save_atomic_note(self, concept_title: str, content: str) -> bool:
+        """
+        Save a new atomic note to the vault.
+        """
+        try:
+            # Clean the title to make it filename-safe
+            import re
+            safe_title = re.sub(r'[<>:"/\\|?*]', '', concept_title)
+            safe_title = safe_title.strip()
+            
+            # Create the file path
+            file_path = self.vault_path / f"{safe_title}.md"
+            
+            # Check if file already exists
+            if file_path.exists():
+                tqdm.write(f"Note already exists: {safe_title}")
+                return False
+                
+            # Save the file
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+                
+            # Add to newly created atomic notes queue for review
+            if hasattr(self, 'new_atomic_notes_queue'):
+                self.new_atomic_notes_queue.append(file_path)
+                tqdm.write(f"✅ Created atomic note: {safe_title}.md (added to review queue)")
+            else:
+                tqdm.write(f"✅ Created atomic note: {safe_title}.md")
+            return True
+            
+        except Exception as e:
+            tqdm.write(f"❌ Failed to save atomic note {concept_title}: {e}")
+            return False
+
+    def enhance_note(self, file_path: Path, content: str) -> str:
+        """
+        Use Gemini to enhance a sparse note using atomic note principles and existing vault notes.
+        
+        SAFETY GUARANTEE: This method will NEVER delete or modify existing content.
+        It only adds new content and creates atomic notes. If the AI accidentally removes any 
+        original content, the safety validation will catch it and return the original content unchanged.
+        
+        Returns:
+            Enhanced content with original content preserved + new additions + atomic note links,
+            or original content unchanged if enhancement fails or safety check fails.
+        """
+        
+        # Step 1: Scan vault for existing notes
+        tqdm.write("🔍 Scanning vault for existing notes...")
+        existing_notes = self.scan_vault_for_existing_notes()
+        tqdm.write(f"Found {len(existing_notes)} existing notes")
+        
+        # Step 2: Identify atomic concepts that should be extracted
+        tqdm.write("🧠 Identifying atomic concepts...")
+        atomic_concepts = self.identify_atomic_concepts(content, existing_notes)
+        
+        if atomic_concepts:
+            tqdm.write(f"📝 Identified {len(atomic_concepts)} atomic concepts: {', '.join(atomic_concepts)}")
+            
+            # Step 3: Create atomic notes for new concepts
+            created_notes = []
+            for concept in atomic_concepts:
+                if concept not in existing_notes:
+                    tqdm.write(f"Creating atomic note: {concept}")
+                    atomic_content = self.create_atomic_note(concept, content, file_path.name)
+                    if self.save_atomic_note(concept, atomic_content):
+                        created_notes.append(concept)
+                        # Track atomic notes created for progress reporting
+                        self.atomic_notes_created.append(concept)
+                        # Add to existing_notes for subsequent linking
+                        existing_notes[concept] = f"{concept}.md"
+                else:
+                    tqdm.write(f"Atomic note already exists: {concept}")
+        
+        # Step 4: Build existing notes context for AI
+        existing_titles = list(existing_notes.keys())[:100]  # Limit to avoid token overflow
+        existing_titles_str = "\n".join([f"- [[{title}]]" for title in existing_titles])
+        
+        # Step 5: Enhance the original note with links to atomic notes
+        prompt = f"""
+You are enhancing a note in a personal knowledge management system using atomic note principles.
 
 CURRENT NOTE TO ENHANCE:
 File: {file_path.name}
@@ -291,30 +510,47 @@ File: {file_path.name}
 {content}
 ===END ORIGINAL CONTENT===
 
+EXISTING NOTES IN VAULT (use these for [[WikiLinks]]):
+{existing_titles_str}
+
+NEWLY CREATED ATOMIC NOTES (link to these):
+{', '.join([f"[[{note}]]" for note in created_notes]) if created_notes else "None"}
+
 YOUR TASK:
-Return the enhanced note content with ALL original content preserved exactly as written, plus your enhancements.
+Return the enhanced note content with ALL original content preserved exactly as written, plus your enhancements following atomic note principles.
 
 STRICT RULES FOR ENHANCEMENT:
 1. PRESERVE ALL ORIGINAL CONTENT: Keep every character, word, line, and formatting exactly as written above
 2. ONLY ADD NEW CONTENT: You may append or insert additional content, but never modify existing text
 3. NO CORRECTIONS: Do not fix typos, grammar, or formatting in the original content
-4. ADD VALUE: Enhance with 1-2 meaningful paragraphs for personal knowledge management
+4. FOCUSED ENHANCEMENT: Add 1-3 meaningful sections only, avoid repetition
+5. NO DUPLICATE HEADERS: Never repeat the same header or content multiple times
 
-ENHANCEMENT FOCUS:
-- Add practical information, examples, or context
-- Include information helpful for future reference
-- Suggest related concepts using [[WikiLinks]] to other topics
-- Provide concrete examples or use cases when relevant
-- Add new headers, lists, or formatting (but keep existing ones unchanged)
-- Make it personally useful for knowledge management
-- Aim for 2-3x the original length minimum
+ATOMIC NOTE ENHANCEMENT FOCUS:
+- Link to relevant existing notes using [[WikiLinks]] - this is CRITICAL
+- Reference the newly created atomic notes where relevant
+- Add 1-2 sections maximum that provide value
+- Connect this note to the broader knowledge network
+- Include practical applications or personal insights
+- Use tags (#tag) for categorization
+- Aim for 2-4x the original length (not 10x+)
+- Keep sections focused and non-repetitive
+
+LINKING STRATEGY:
+- Use [[Note Name]] for existing notes whenever concepts are mentioned
+- Reference atomic notes when discussing their concepts
+- Add one "Related Notes" section at the end if helpful
+- Connect to 3-8 relevant existing notes maximum
 
 CRITICAL OUTPUT REQUIREMENTS:
 - Return ONLY the enhanced note content
 - Include ALL original content exactly as written
+- Do NOT repeat headers or create duplicate sections
 - Do NOT include any instructions, explanations, or commentary
 - Do NOT include any safety requirement text in the output
 - Do NOT include any metadata about the enhancement process
+- MUST include WikiLinks to existing notes - this is essential for knowledge management
+- Keep enhancement focused and concise (2-4x original length maximum)
 
 Begin your response with the enhanced note content now:
 """
@@ -338,6 +574,12 @@ Begin your response with the enhanced note content now:
                 tqdm.write(f"⚠️ Safety check failed: Original content not fully preserved in enhanced note")
                 tqdm.write(f"Returning original content unchanged for safety")
                 return content
+                
+            # Report on what was created
+            if created_notes:
+                tqdm.write(f"🎉 Enhanced note with {len(created_notes)} new atomic notes and knowledge links")
+            else:
+                tqdm.write(f"🎉 Enhanced note with existing knowledge links")
                 
             return enhanced_content
             
@@ -635,6 +877,8 @@ Begin your response with the enhanced note content now:
             "deleted_files": [str(f) for f in self.deleted_files],
             "kept_files": [str(f) for f in self.kept_files],
             "enhanced_files": [str(f) for f in self.enhanced_files],
+            "atomic_notes_created": self.atomic_notes_created,
+            "atomic_notes_reviewed": getattr(self, 'atomic_notes_reviewed', []),
             "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
             "config": self.config
         }
@@ -664,6 +908,8 @@ Begin your response with the enhanced note content now:
             self.deleted_files = [Path(f) for f in progress_data.get("deleted_files", [])]
             self.kept_files = [Path(f) for f in progress_data.get("kept_files", [])]
             self.enhanced_files = [Path(f) for f in progress_data.get("enhanced_files", [])]
+            self.atomic_notes_created = progress_data.get("atomic_notes_created", [])
+            self.atomic_notes_reviewed = progress_data.get("atomic_notes_reviewed", [])
             self.original_session_start = progress_data.get("session_start", time.strftime("%Y-%m-%d %H:%M:%S"))
             
             # Load configuration (merge with defaults for new settings)
@@ -675,6 +921,7 @@ Begin your response with the enhanced note content now:
             print(f"Files deleted: {len(self.deleted_files)}")
             print(f"Files kept: {len(self.kept_files)}")
             print(f"Files enhanced: {len(self.enhanced_files)}")
+            print(f"Atomic notes created: {len(self.atomic_notes_created)}")
             
             return True
             
@@ -1223,9 +1470,13 @@ JSON REQUIREMENTS:
             "deleted_files": [str(f) for f in self.deleted_files],
             "kept_files": [str(f) for f in self.kept_files],
             "enhanced_files": [str(f) for f in self.enhanced_files],
+            "atomic_notes_created": self.atomic_notes_created,
+            "atomic_notes_reviewed": getattr(self, 'atomic_notes_reviewed', []),
             "total_deleted": len(self.deleted_files),
             "total_kept": len(self.kept_files),
-            "total_enhanced": len(self.enhanced_files)
+            "total_enhanced": len(self.enhanced_files),
+            "total_atomic_notes_created": len(self.atomic_notes_created),
+            "total_atomic_notes_reviewed": len(getattr(self, 'atomic_notes_reviewed', []))
         }
         
         log_file = self.vault_path / "vault_review_log.json"
@@ -1254,9 +1505,14 @@ JSON REQUIREMENTS:
                 self.deleted_files = []
                 self.kept_files = []
                 self.enhanced_files = []
+                self.atomic_notes_created = []
+                self.atomic_notes_reviewed = []
         
         # Find all markdown files
         md_files = self.find_markdown_files()
+        
+        # Initialize queue for newly created atomic notes
+        self.new_atomic_notes_queue = []
         
         if not md_files:
             if continuing_session:
@@ -1302,19 +1558,27 @@ JSON REQUIREMENTS:
         )
         
         try:
-            for i, file_path in enumerate(md_files, 1):
+            # Convert to list to allow dynamic additions
+            files_to_process = list(md_files)
+            i = 0
+            
+            while i < len(files_to_process):
+                file_path = files_to_process[i]
+                i += 1
                 current_position = processed_count + i
                 
                 # Don't clear screen at start of each file - just add spacing
                 if i > 1:  # Skip spacing for first file
                     self.soft_clear_for_tqdm(5)
                 
-                # Show progress
+                # Show progress (use current list length for dynamic total)
+                current_total = len(files_to_process) + len(self.processed_files)
                 files_completed = processed_count + i - 1
-                tqdm.write(f"Progress: {files_completed}/{total_files} files processed ({files_completed/total_files*100:.1f}%)")
+                tqdm.write(f"Progress: {files_completed}/{current_total} files processed ({files_completed/current_total*100:.1f}%)")
                 tqdm.write("")  # Add blank line for readability
                 
-                # Update progress bar description with current file
+                # Update progress bar with dynamic total
+                progress_bar.total = current_total
                 progress_bar.set_description(f"Processing: {file_path.name[:30]}...")
                 
                 # Read file content
@@ -1322,6 +1586,12 @@ JSON REQUIREMENTS:
                 
                 # Analyze with Gemini
                 tqdm.write(f"Analyzing: {file_path.name}...")
+                
+                # Check if this is an atomic note that was created in this session
+                is_created_atomic_note = file_path.stem in self.atomic_notes_created
+                if is_created_atomic_note:
+                    tqdm.write(f"📝 Note: This is an atomic note created during this session")
+                
                 analysis = self.analyze_note_relevance(file_path, content)
                 
                 # Check for auto-decision
@@ -1329,12 +1599,16 @@ JSON REQUIREMENTS:
                 
                 if auto_decision == "auto_keep":
                     self.kept_files.append(file_path)
+                    if is_created_atomic_note:
+                        self.atomic_notes_reviewed.append(file_path.stem)
                     self.processed_files.add(str(file_path))
                     self.save_progress()
                     decision = 'keep'
                 elif auto_decision == "auto_delete":
                     if self.delete_file(file_path):
                         self.deleted_files.append(file_path)
+                        if is_created_atomic_note:
+                            self.atomic_notes_reviewed.append(file_path.stem)
                     self.processed_files.add(str(file_path))
                     self.save_progress()
                     decision = 'delete'
@@ -1416,6 +1690,8 @@ JSON REQUIREMENTS:
                                         
                                         if enhanced_auto_decision == "auto_keep":
                                             self.kept_files.append(file_path)
+                                            if is_created_atomic_note:
+                                                self.atomic_notes_reviewed.append(file_path.stem)
                                             tqdm.write(f"Enhanced note auto-kept: {file_path}")
                                             self.processed_files.add(str(file_path))
                                             self.save_progress()
@@ -1423,6 +1699,8 @@ JSON REQUIREMENTS:
                                         elif enhanced_auto_decision == "auto_delete":
                                             if self.delete_file(file_path):
                                                 self.deleted_files.append(file_path)
+                                                if is_created_atomic_note:
+                                                    self.atomic_notes_reviewed.append(file_path.stem)
                                             self.processed_files.add(str(file_path))
                                             self.save_progress()
                                             break
@@ -1454,11 +1732,17 @@ JSON REQUIREMENTS:
                                                 
                                         if enhanced_decision == 'keep':
                                             self.kept_files.append(file_path)
+                                            if is_created_atomic_note:
+                                                self.atomic_notes_reviewed.append(file_path.stem)
                                             tqdm.write(f"Enhanced note kept: {file_path}")
                                         elif enhanced_decision == 'delete':
                                             if self.delete_file(file_path):
                                                 self.deleted_files.append(file_path)
+                                                if is_created_atomic_note:
+                                                    self.atomic_notes_reviewed.append(file_path.stem)
                                         elif enhanced_decision == 'skip':
+                                            if is_created_atomic_note:
+                                                self.atomic_notes_reviewed.append(file_path.stem)
                                             tqdm.write(f"Enhanced note skipped: {file_path}")
                                         elif enhanced_decision == 'quit':
                                             decision = 'quit'
@@ -1486,16 +1770,22 @@ JSON REQUIREMENTS:
                         elif decision == 'delete':
                             if self.delete_file(file_path):
                                 self.deleted_files.append(file_path)
+                                if is_created_atomic_note:
+                                    self.atomic_notes_reviewed.append(file_path.stem)
                             self.processed_files.add(str(file_path))
                             self.save_progress()  # Save progress after each file
                             break
                         elif decision == 'keep':
                             self.kept_files.append(file_path)
+                            if is_created_atomic_note:
+                                self.atomic_notes_reviewed.append(file_path.stem)
                             tqdm.write(f"Kept: {file_path}")
                             self.processed_files.add(str(file_path))
                             self.save_progress()  # Save progress after each file
                             break
                         elif decision == 'skip':
+                            if is_created_atomic_note:
+                                self.atomic_notes_reviewed.append(file_path.stem)
                             tqdm.write(f"Skipped: {file_path}")
                             self.processed_files.add(str(file_path))
                             self.save_progress()  # Save progress after each file
@@ -1503,6 +1793,29 @@ JSON REQUIREMENTS:
                         
                 # Update progress bar
                 progress_bar.update(1)
+                
+                # Process any newly created atomic notes
+                if self.new_atomic_notes_queue:
+                    tqdm.write(f"\n🔄 Processing {len(self.new_atomic_notes_queue)} newly created atomic notes...")
+                    
+                    # Add new atomic notes to the processing queue (insert at current position for alphabetical order)
+                    new_notes = list(self.new_atomic_notes_queue)
+                    self.new_atomic_notes_queue.clear()
+                    
+                    # Insert new notes in correct alphabetical position
+                    for new_note_path in sorted(new_notes):
+                        # Find the correct insertion point to maintain alphabetical order
+                        insert_pos = i  # Start from current position
+                        for j in range(i, len(files_to_process)):
+                            if str(new_note_path) < str(files_to_process[j]):
+                                insert_pos = j
+                                break
+                        
+                        # Only add if not already processed and not already in queue
+                        if (str(new_note_path) not in self.processed_files and 
+                            new_note_path not in files_to_process):
+                            files_to_process.insert(insert_pos, new_note_path)
+                            tqdm.write(f"   📝 Added to review queue: {new_note_path.name}")
                         
                 # Break out of outer loop if user chose quit
                 if decision == 'quit':
@@ -1531,7 +1844,16 @@ JSON REQUIREMENTS:
         print(f"{Fore.RED}Files deleted: {len(self.deleted_files)}{Style.RESET_ALL}")
         print(f"{Fore.GREEN}Files kept: {len(self.kept_files)}{Style.RESET_ALL}")
         print(f"{Fore.YELLOW}Files enhanced: {len(self.enhanced_files)}{Style.RESET_ALL}")
+        print(f"{Fore.MAGENTA}Atomic notes created: {len(self.atomic_notes_created)}{Style.RESET_ALL}")
         print(f"{Fore.CYAN}Total processed: {len(self.deleted_files) + len(self.kept_files)}{Style.RESET_ALL}")
+        
+        if self.atomic_notes_created:
+            print(f"\n{Fore.MAGENTA}🔗 Atomic notes created:{Style.RESET_ALL}")
+            for note_title in self.atomic_notes_created:
+                if note_title in self.atomic_notes_reviewed:
+                    print(f"   - {note_title}.md ✅ (also reviewed)")
+                else:
+                    print(f"   - {note_title}.md")
         
         if self.enhanced_files:
             print(f"\n{Fore.YELLOW}✨ Enhanced files:{Style.RESET_ALL}")
@@ -1542,6 +1864,19 @@ JSON REQUIREMENTS:
             print(f"\n{Fore.RED}🗑️ Deleted files:{Style.RESET_ALL}")
             for file_path in self.deleted_files:
                 print(f"   - {file_path.relative_to(self.vault_path)}")
+
+    def restore_note_from_backup(self, file_path: Path, original_content: str) -> bool:
+        """
+        Restore a note to its original content (useful if enhancement went wrong).
+        """
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(original_content)
+            tqdm.write(f"✅ Restored note to original content: {file_path.name}")
+            return True
+        except Exception as e:
+            tqdm.write(f"❌ Failed to restore note: {e}")
+            return False
 
 
 def main():
