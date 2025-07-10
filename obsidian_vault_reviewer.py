@@ -60,6 +60,30 @@ class ObsidianVaultReviewer:
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
         
+    def clear_screen(self):
+        """Clear the terminal screen (cross-platform)."""
+        os.system('cls' if os.name == 'nt' else 'clear')
+        
+    def get_yes_no_input(self, prompt: str) -> bool:
+        """Get a yes/no decision using single-key input."""
+        while True:
+            print(f"{prompt} (y/n): ", end="", flush=True)
+            
+            try:
+                choice = getch()
+                
+                if choice == 'y':
+                    print("y")
+                    return True
+                elif choice == 'n':
+                    print("n")  
+                    return False
+                else:
+                    print(f"{choice} - Invalid choice. Please press 'y' for yes or 'n' for no.")
+            except (KeyboardInterrupt, EOFError):
+                print("\nExiting...")
+                sys.exit(0)
+        
     def signal_handler(self, signum, frame):
         """Handle interruption signals (Ctrl-C) gracefully."""
         print(f"\n\n🛑 Interrupted! Saving progress...")
@@ -321,34 +345,58 @@ Consider factors like:
 - Recency and relevance
 - Whether it's a template, reference, or personal note
 
-**CRITICAL SCORING RULES - PERSONAL DATA IS VALUABLE:**
+**CRITICAL SCORING RULES - PERSONAL KNOWLEDGE IS MOST VALUABLE:**
 
-**MAJOR BONUSES (+3-4 points each):**
-- **Personal financial data** (401k, investments, portfolio tracking, bank info, taxes): +4 points (irreplaceable personal records)
-- **Personal medical/health records** (symptoms, treatments, doctor visits): +4 points (important health history)
-- **Personal career data** (job history, performance reviews, salary info): +3 points (career tracking)
-- **Personal project tracking** (goals, habits, progress logs): +3 points (self-improvement data)
-- **API keys, passwords, credentials, secrets**: +4 points (critical security info)
-- **Personal contacts/relationships** (addresses, phone numbers, personal notes about people): +3 points
+**MAXIMUM VALUE (+4-5 points each) - Core "Second Brain" Content:**
+- **Personal financial data** (401k, investments, portfolio tracking, bank info, taxes): +5 points (irreplaceable personal records)
+- **Personal medical/health records** (symptoms, treatments, doctor visits, health tracking): +5 points (important health history)
+- **Original thoughts and insights** (personal reflections, unique ideas, "aha moments"): +4 points (irreplaceable creativity)
+- **Personal learning synthesis** (combining multiple sources with your own understanding): +4 points (knowledge building)
+- **Life experiences and stories** (travel, relationships, major events, lessons learned): +4 points (personal history)
+- **API keys, passwords, credentials, secrets**: +5 points (critical security info)
 
-**SIGNIFICANT BONUSES (+2-3 points each):**
+**HIGH VALUE (+3-4 points each) - Personal Development & Systems:**
+- **Personal project tracking** (goals, habits, progress logs, reviews): +4 points (self-improvement data)
+- **Career development** (job history, performance reviews, salary info, career planning): +4 points (career tracking)
+- **Personal workflows and systems** (custom templates, processes you created): +3 points (reusable personal systems)
+- **Book notes with personal commentary** (highlights + your thoughts and connections): +3 points (learning with insight)
+- **Meeting notes with personal action items** (decisions you made, follow-ups): +3 points (personal responsibility tracking)
 - **Time-series data/tracking** (charts, logs, measurements over time): +3 points (historical value)
-- **Hub/index notes** with many outgoing links: +3 points (central to knowledge network)
-- **Personal autobiographical content** (diary, memories, experiences): +2 points (unique life data)
-- **Templates and workflows** you created: +2 points (reusable personal systems)
+- **Daily notes and journal entries** (personal reflections, mood, daily planning): +3 points (life documentation)
+
+**SOLID VALUE (+2-3 points each) - Knowledge Network & Organization:**
+- **Hub/index notes** with many outgoing links (MOCs - Maps of Content): +3 points (central to knowledge network)
+- **Multiple WikiLinks [[note name]]** (3+ internal links): +3 points (highly interconnected knowledge)
+- **Tags and metadata** (#tag, YAML frontmatter): +3 points (organized knowledge structure)
+- **Personal contacts/relationships** (addresses, phone numbers, personal notes about people): +3 points (relationship management)
+- **Personal research with insights** (your questions, hypotheses, conclusions): +2 points (original investigation)
+- **Project planning and documentation** (your projects, not work assignments): +2 points (personal organization)
 - **Obsidian links [[note name]]** connecting to other notes: +2 points (shows interconnectedness)
+- **Personal definitions and explanations** (your way of understanding complex topics): +2 points (personal knowledge building)
 
-**MINOR BONUSES (+1 point each):**
-- **Meeting notes** with action items or decisions: +1 point
-- **Research notes** with sources and synthesis: +1 point
-- **Learning notes** with personal insights: +1 point
+**MINOR VALUE (+1-2 points each) - Supporting Content:**
+- **Learning notes with some personal insight** (courses, tutorials with your notes): +2 points (active learning)
+- **Reference materials you curated** (useful links, resources you collected): +1 point (personal curation)
+- **Templates from others you modified** (adapted to your needs): +1 point (personalization)
+- **Event notes** (conferences, talks you attended with takeaways): +1 point (learning documentation)
 
-**PENALTIES (-2-3 points each):**
-- **Easily recreated from Google/Wikipedia**: -3 points (generic information)
-- **Outdated technology/software notes**: -2 points (unless personal setup)
-- **Empty or minimal content**: -2 points
+**MAJOR PENALTIES (-3-4 points each) - Anti-"Second Brain" Content:**
+- **Copy-pasted content without personal input**: -4 points (not your thoughts, just storage)
+- **Easily recreated from Google/Wikipedia**: -4 points (generic information, not personal knowledge)
+- **Temporary/outdated task lists** (completed todos, old project notes): -3 points (served their purpose)
+- **Duplicate information** (same content in multiple places): -3 points (knowledge fragmentation)
+- **Empty placeholder notes** (titles with no content, "TODO" notes never filled): -3 points (intellectual debt)
 
-**REMEMBER: Personal = Valuable. Any note containing personal data, tracking, or financial information should score 7+ points.**
+**MODERATE PENALTIES (-2-3 points each) - Reduced Value Content:**
+- **No WikiLinks or tags**: -3 points (isolated from knowledge network, defeats Obsidian's purpose)
+- **No Obsidian links [[note name]]**: -3 points (not connected to other notes, missing knowledge graph value)
+- **No tags or metadata**: -2 points (poor organization, hard to find and categorize)
+- **Outdated technology/software notes** (unless personal setup): -2 points (temporal relevance lost)
+- **Generic templates from internet** (unchanged, not personalized): -2 points (not your system)
+- **Pure link collections** (no commentary, context, or personal organization): -2 points (no added value)
+- **Work-only content** (company-specific info with no personal insight): -2 points (less relevant to personal knowledge)
+
+**REMEMBER: Personal = Valuable. WikiLinks/Tags = Essential. Any note containing personal data, tracking, or financial information should score 7+ points. Notes with WikiLinks [[note name]] and tags #tag are the backbone of your knowledge network and should be strongly favored.**
 
 Respond in JSON format:
 {{
@@ -582,21 +630,15 @@ Respond in JSON format:
         # Check for existing progress
         continuing_session = False
         if self.load_progress():
-            while True:
-                choice = input("\nDo you want to continue the previous review session? (y/n): ").lower().strip()
-                if choice in ['y', 'yes']:
-                    continuing_session = True
-                    print("Continuing previous session...")
-                    break
-                elif choice in ['n', 'no']:
-                    print("Starting fresh review session...")
-                    # Reset progress
-                    self.processed_files = set()
-                    self.deleted_files = []
-                    self.kept_files = []
-                    break
-                else:
-                    print("Please enter 'y' or 'n'")
+            continuing_session = self.get_yes_no_input("\nDo you want to continue the previous review session?")
+            if continuing_session:
+                print("Continuing previous session...")
+            else:
+                print("Starting fresh review session...")
+                # Reset progress
+                self.processed_files = set()
+                self.deleted_files = []
+                self.kept_files = []
         
         # Find all markdown files
         md_files = self.find_markdown_files()
@@ -619,10 +661,17 @@ Respond in JSON format:
             print(f"Progress: {processed_count}/{total_files} files already processed")
         print("Tip: Consider backing up your vault before proceeding!")
         
-        input("\nPress Enter to start the review process...")
-        
         # Save initial progress to create the file
         self.save_progress()
+        
+        # Clear screen to start fresh
+        self.clear_screen()
+        print("🚀 Starting Obsidian Vault Review")
+        print("="*50)
+        print(f"Reviewing {len(md_files)} remaining files")
+        if continuing_session:
+            print(f"Progress: {processed_count}/{total_files} files already processed")
+        print("")
         
         # Create progress bar
         progress_bar = tqdm(
@@ -660,6 +709,13 @@ Respond in JSON format:
                         break
                     elif decision == 'view':
                         self.display_full_content_with_tqdm(file_path, content)
+                        # Clear screen after viewing full content and re-display analysis
+                        self.clear_screen()
+                        # Show progress after clearing screen
+                        current_progress = processed_count + i
+                        tqdm.write(f"Progress: {current_progress}/{total_files} files processed ({current_progress/total_files*100:.1f}%)")
+                        tqdm.write("")  # Add blank line for readability
+                        self.display_analysis_with_tqdm(file_path, analysis, content)
                         # Continue the loop to ask for decision again
                         continue
                     elif decision == 'delete':
@@ -686,6 +742,14 @@ Respond in JSON format:
                 # Break out of outer loop if user chose quit
                 if decision == 'quit':
                     break
+                    
+                # Clear screen before next file to reduce clutter
+                if decision != 'quit':
+                    self.clear_screen()
+                    # Show progress after clearing screen
+                    current_progress = processed_count + i
+                    tqdm.write(f"Progress: {current_progress}/{total_files} files processed ({current_progress/total_files*100:.1f}%)")
+                    tqdm.write("")  # Add blank line for readability
                     
                 # Small delay to avoid API rate limits
                 time.sleep(1)
