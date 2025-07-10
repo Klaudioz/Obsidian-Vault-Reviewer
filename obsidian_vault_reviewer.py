@@ -177,7 +177,17 @@ class ObsidianVaultReviewer:
         return None
         
     def enhance_note(self, file_path: Path, content: str) -> str:
-        """Use Gemini to enhance a sparse note by adding meaningful content."""
+        """
+        Use Gemini to enhance a sparse note by adding meaningful content.
+        
+        SAFETY GUARANTEE: This method will NEVER delete or modify existing content.
+        It only adds new content. If the AI accidentally removes any original content,
+        the safety validation will catch it and return the original content unchanged.
+        
+        Returns:
+            Enhanced content with original content preserved + new additions,
+            or original content unchanged if enhancement fails or safety check fails.
+        """
         prompt = f"""
 You are helping improve a sparse Obsidian note in a personal knowledge management system. The current note is very brief and needs enhancement.
 
@@ -186,23 +196,34 @@ File: {file_path.name}
 Content:
 {content}
 
+🚨 CRITICAL SAFETY REQUIREMENTS - MUST BE FOLLOWED:
+1. **NEVER DELETE OR MODIFY ANY EXISTING CONTENT** - Every single character, word, and line from the original note MUST be preserved exactly as written
+2. **ONLY ADD NEW CONTENT** - You may only append or insert additional content, never remove or change existing text
+3. **PRESERVE ALL FORMATTING** - Keep all existing headers, lists, links, formatting, spacing, and structure exactly as they are
+4. **NO CORRECTIONS** - Do not fix typos, grammar, or formatting in the original content - leave it completely unchanged
+
+Enhancement Goals:
 Please enhance this note by adding 1-2 meaningful paragraphs that would make it more valuable in a personal "second brain" context. Focus on:
 
 1. **Practical Information**: Add useful details, examples, or context
-2. **Personal Knowledge**: Include information that would be helpful for future reference
+2. **Personal Knowledge**: Include information that would be helpful for future reference  
 3. **Connections**: Suggest related concepts or potential [[WikiLinks]] to other topics
 4. **Examples**: Provide concrete examples or use cases when relevant
-5. **Structure**: Improve organization with headers, lists, or formatting
+5. **Structure**: Add new headers, lists, or formatting (but keep existing ones unchanged)
 
-Requirements:
-- Keep the existing content intact
-- Add substantial value (aim for 2-3x the original length minimum)
-- Use Obsidian-style [[WikiLinks]] for related concepts
-- Include practical examples or use cases
-- Make it personally useful for knowledge management
-- Use proper markdown formatting
+SAFETY REQUIREMENTS (REPEATED FOR EMPHASIS):
+- ❌ NEVER delete, modify, or "correct" any existing content
+- ❌ NEVER change existing formatting, headers, or structure  
+- ❌ NEVER fix typos or grammar in the original text
+- ✅ ONLY add new content that enhances the note
+- ✅ Keep ALL original content exactly as written
+- ✅ Add substantial value (aim for 2-3x the original length minimum)
+- ✅ Use Obsidian-style [[WikiLinks]] for related concepts
+- ✅ Include practical examples or use cases
+- ✅ Make it personally useful for knowledge management
+- ✅ Use proper markdown formatting for NEW content only
 
-Return ONLY the enhanced note content (including the original content), without any explanation or commentary.
+Return ONLY the enhanced note content (with ALL original content preserved + new additions), without any explanation or commentary.
 """
 
         try:
@@ -214,12 +235,51 @@ Return ONLY the enhanced note content (including the original content), without 
                 enhanced_content = enhanced_content.split('```markdown')[1].split('```')[0].strip()
             elif enhanced_content.startswith('```'):
                 enhanced_content = enhanced_content.split('```')[1].split('```')[0].strip()
+            
+            # SAFETY CHECK: Verify that all original content is preserved
+            if not self.validate_content_preservation(content, enhanced_content):
+                tqdm.write(f"⚠️ Safety check failed: Original content not fully preserved in enhanced note")
+                tqdm.write(f"Returning original content unchanged for safety")
+                return content
                 
             return enhanced_content
             
         except Exception as e:
             tqdm.write(f"Error enhancing note: {e}")
             return content  # Return original content if enhancement fails
+            
+    def validate_content_preservation(self, original: str, enhanced: str) -> bool:
+        """
+        Validate that the enhanced content contains all original content.
+        This is a safety check to ensure no content is deleted during enhancement.
+        """
+        # Basic check: enhanced content should be longer than original
+        if len(enhanced) < len(original):
+            return False
+            
+        # Normalize whitespace for comparison (but preserve structure)
+        original_lines = [line.rstrip() for line in original.split('\n')]
+        enhanced_lines = [line.rstrip() for line in enhanced.split('\n')]
+        
+        # Check that all original lines appear in the enhanced version
+        # We allow for new lines to be inserted, but all original lines must remain
+        original_line_index = 0
+        
+        for enhanced_line in enhanced_lines:
+            if original_line_index < len(original_lines):
+                if enhanced_line == original_lines[original_line_index]:
+                    original_line_index += 1
+                    
+        # If we've matched all original lines, the content is preserved
+        if original_line_index == len(original_lines):
+            return True
+            
+        # Fallback: Check if the original content exists as a substring (less strict)
+        # This handles cases where formatting might be slightly different
+        original_normalized = original.strip()
+        enhanced_normalized = enhanced.strip()
+        
+        return original_normalized in enhanced_normalized
             
     def save_enhanced_note(self, file_path: Path, enhanced_content: str) -> bool:
         """Save the enhanced note content to file."""
