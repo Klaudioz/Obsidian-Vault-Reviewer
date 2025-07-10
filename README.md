@@ -19,7 +19,7 @@ An AI-powered tool that helps you clean up and organize your Obsidian vault by a
 
 https://github.com/user-attachments/assets/05a46ecd-9822-47e3-a73a-c9fef3392d51
 
-## Scoring System
+## 🎯 Enhanced Scoring System
 
 The AI uses a sophisticated second brain scoring system that heavily favors personal knowledge:
 
@@ -268,4 +268,4 @@ Script includes 1-second delays between API calls. If limits are hit, script con
 
 This script is provided as-is for personal use. Please review and test thoroughly before using on important data. Always backup your vault before running cleanup operations.
 
-**Content Safety Guarantee**: The enhancement feature includes a triple-layer safety system that ensures your original content is never deleted or modified. Original text is preserved character-for-character, with automatic validation and fallback protection. 
+**Content Safety Guarantee**: The enhancement feature includes a triple-layer safety system that ensures your original content is NEVER deleted or modified. Original text is preserved character-for-character, with automatic validation and fallback protection. Enhanced notes are saved immediately - the AI only adds new content, never removes or changes existing content.
