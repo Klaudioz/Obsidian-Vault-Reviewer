@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import time
+import signal
 from pathlib import Path
 from typing import List, Dict, Optional
 import google.generativeai as genai
@@ -22,11 +23,92 @@ class ObsidianVaultReviewer:
         self.setup_gemini()
         self.deleted_files = []
         self.kept_files = []
+        self.progress_file = self.vault_path / ".obsidian_review_progress.json"
+        self.processed_files = set()  # Track which files have been processed
+        self.original_session_start = time.strftime("%Y-%m-%d %H:%M:%S")  # Track session start time
+        self.setup_signal_handlers()  # Handle Ctrl-C gracefully
         
     def setup_gemini(self):
         """Configure Gemini API."""
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel('gemini-2.5-flash-lite-preview-06-17')
+        
+    def setup_signal_handlers(self):
+        """Set up signal handlers to save progress on interruption."""
+        signal.signal(signal.SIGINT, self.signal_handler)
+        signal.signal(signal.SIGTERM, self.signal_handler)
+        
+    def signal_handler(self, signum, frame):
+        """Handle interruption signals (Ctrl-C) gracefully."""
+        print(f"\n\n🛑 Interrupted! Saving progress...")
+        try:
+            self.save_progress()
+            print("✅ Progress saved successfully.")
+            print("You can continue the review by running the script again.")
+        except Exception as e:
+            print(f"❌ Failed to save progress: {e}")
+            print("Some progress may be lost.")
+        sys.exit(0)
+        
+    def save_progress(self):
+        """Save current progress to file."""
+        # Preserve original session start time if continuing a session
+        session_start = getattr(self, 'original_session_start', time.strftime("%Y-%m-%d %H:%M:%S"))
+        
+        progress_data = {
+            "session_start": session_start,
+            "vault_path": str(self.vault_path),
+            "processed_files": list(self.processed_files),
+            "deleted_files": [str(f) for f in self.deleted_files],
+            "kept_files": [str(f) for f in self.kept_files],
+            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        try:
+            with open(self.progress_file, 'w') as f:
+                json.dump(progress_data, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Failed to save progress: {e}")
+            
+    def load_progress(self) -> bool:
+        """Load progress from file if it exists. Returns True if progress was loaded."""
+        if not self.progress_file.exists():
+            return False
+            
+        try:
+            with open(self.progress_file, 'r') as f:
+                progress_data = json.load(f)
+                
+            # Verify this progress file is for the same vault
+            if progress_data.get("vault_path") != str(self.vault_path):
+                print(f"Progress file is for a different vault: {progress_data.get('vault_path')}")
+                return False
+                
+            # Load progress
+            self.processed_files = set(progress_data.get("processed_files", []))
+            self.deleted_files = [Path(f) for f in progress_data.get("deleted_files", [])]
+            self.kept_files = [Path(f) for f in progress_data.get("kept_files", [])]
+            self.original_session_start = progress_data.get("session_start", time.strftime("%Y-%m-%d %H:%M:%S"))
+            
+            print(f"Found previous review session from: {progress_data.get('session_start', 'Unknown')}")
+            print(f"Files already processed: {len(self.processed_files)}")
+            print(f"Files deleted: {len(self.deleted_files)}")
+            print(f"Files kept: {len(self.kept_files)}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error loading progress file: {e}")
+            return False
+            
+    def cleanup_progress_file(self):
+        """Remove the progress file when review is complete."""
+        try:
+            if self.progress_file.exists():
+                self.progress_file.unlink()
+                print("Progress file cleaned up.")
+        except Exception as e:
+            print(f"Warning: Failed to cleanup progress file: {e}")
         
     def find_markdown_files(self) -> List[Path]:
         """Recursively find all markdown files in the vault."""
@@ -34,6 +116,13 @@ class ObsidianVaultReviewer:
         md_files = list(self.vault_path.rglob("*.md"))
         md_files.sort()  # Sort files alphabetically
         print(f"Found {len(md_files)} markdown files")
+        
+        # Filter out already processed files
+        if self.processed_files:
+            unprocessed_files = [f for f in md_files if str(f) not in self.processed_files]
+            print(f"Unprocessed files: {len(unprocessed_files)}")
+            return unprocessed_files
+        
         return md_files
         
     def read_file_content(self, file_path: Path) -> str:
@@ -80,21 +169,35 @@ Consider factors like:
 - Practical utility
 - Recency and relevance
 - Whether it's a template, reference, or personal note
-- **IMPORTANT: Increase score if contains sensitive information like API keys, passwords, tokens, or credentials (+2-3 points)**
-- **IMPORTANT: Increase score if contains Obsidian links [[note name]] showing connections to other notes (+1-2 points)**
-- **IMPORTANT: Increase score if it's a hub/index note with many outgoing links (+2-3 points)**
-- **IMPORTANT: Increase score if note appears personal/autobiographical (+1-2 points)**
-- **IMPORTANT: Decrease score if content is easily recreated from Google or Wikipedia (-2-3 points)**
 
-SCORING BONUSES:
-- Contains API keys, passwords, or credentials: +2-3 points (important to keep secure info)
-- Contains [[wiki-style links]] to other notes: +1-2 points (shows interconnectedness)
-- Has many outgoing links (hub note): +2-3 points (central to knowledge network)
-- Template files: +1-2 points (reusable structure)
-- Personal/autobiographical content: +1-2 points (unique to the user)
+**CRITICAL SCORING RULES - PERSONAL DATA IS VALUABLE:**
 
-SCORING PENALTIES:
-- Easily recreated from Google/Wikipedia: -2-3 points (generic information)
+**MAJOR BONUSES (+3-4 points each):**
+- **Personal financial data** (401k, investments, portfolio tracking, bank info, taxes): +4 points (irreplaceable personal records)
+- **Personal medical/health records** (symptoms, treatments, doctor visits): +4 points (important health history)
+- **Personal career data** (job history, performance reviews, salary info): +3 points (career tracking)
+- **Personal project tracking** (goals, habits, progress logs): +3 points (self-improvement data)
+- **API keys, passwords, credentials, secrets**: +4 points (critical security info)
+- **Personal contacts/relationships** (addresses, phone numbers, personal notes about people): +3 points
+
+**SIGNIFICANT BONUSES (+2-3 points each):**
+- **Time-series data/tracking** (charts, logs, measurements over time): +3 points (historical value)
+- **Hub/index notes** with many outgoing links: +3 points (central to knowledge network)
+- **Personal autobiographical content** (diary, memories, experiences): +2 points (unique life data)
+- **Templates and workflows** you created: +2 points (reusable personal systems)
+- **Obsidian links [[note name]]** connecting to other notes: +2 points (shows interconnectedness)
+
+**MINOR BONUSES (+1 point each):**
+- **Meeting notes** with action items or decisions: +1 point
+- **Research notes** with sources and synthesis: +1 point
+- **Learning notes** with personal insights: +1 point
+
+**PENALTIES (-2-3 points each):**
+- **Easily recreated from Google/Wikipedia**: -3 points (generic information)
+- **Outdated technology/software notes**: -2 points (unless personal setup)
+- **Empty or minimal content**: -2 points
+
+**REMEMBER: Personal = Valuable. Any note containing personal data, tracking, or financial information should score 7+ points.**
 
 Respond in JSON format:
 {{
@@ -234,20 +337,54 @@ Respond in JSON format:
         print("Starting Obsidian Vault Review")
         print("="*50)
         
+        # Check for existing progress
+        continuing_session = False
+        if self.load_progress():
+            while True:
+                choice = input("\nDo you want to continue the previous review session? (y/n): ").lower().strip()
+                if choice in ['y', 'yes']:
+                    continuing_session = True
+                    print("Continuing previous session...")
+                    break
+                elif choice in ['n', 'no']:
+                    print("Starting fresh review session...")
+                    # Reset progress
+                    self.processed_files = set()
+                    self.deleted_files = []
+                    self.kept_files = []
+                    break
+                else:
+                    print("Please enter 'y' or 'n'")
+        
         # Find all markdown files
         md_files = self.find_markdown_files()
         
         if not md_files:
-            print("No markdown files found in the vault.")
-            return
-            
-        print(f"\nReady to review {len(md_files)} files")
+            if continuing_session:
+                print("All files have been processed in the previous session!")
+                self.show_summary()
+                self.cleanup_progress_file()
+                return
+            else:
+                print("No markdown files found in the vault.")
+                return
+                
+        total_files = len(md_files) + len(self.processed_files)
+        processed_count = len(self.processed_files)
+        
+        print(f"\nReady to review {len(md_files)} remaining files")
+        if continuing_session:
+            print(f"Progress: {processed_count}/{total_files} files already processed")
         print("Tip: Consider backing up your vault before proceeding!")
         
         input("\nPress Enter to start the review process...")
         
+        # Save initial progress to create the file
+        self.save_progress()
+        
         for i, file_path in enumerate(md_files, 1):
-            print(f"\nProgress: {i}/{len(md_files)} files")
+            current_position = processed_count + i
+            print(f"\nProgress: {current_position}/{total_files} files")
             
             # Read file content
             content = self.read_file_content(file_path)
@@ -265,6 +402,7 @@ Respond in JSON format:
                 
                 if decision == 'quit':
                     print("\nReview process stopped by user.")
+                    print("Progress has been saved. You can continue later by running the script again.")
                     break
                 elif decision == 'view':
                     self.display_full_content(file_path, content)
@@ -273,13 +411,19 @@ Respond in JSON format:
                 elif decision == 'delete':
                     if self.delete_file(file_path):
                         self.deleted_files.append(file_path)
+                    self.processed_files.add(str(file_path))
+                    self.save_progress()  # Save progress after each file
                     break
                 elif decision == 'keep':
                     self.kept_files.append(file_path)
                     print(f"Kept: {file_path}")
+                    self.processed_files.add(str(file_path))
+                    self.save_progress()  # Save progress after each file
                     break
                 elif decision == 'skip':
                     print(f"Skipped: {file_path}")
+                    self.processed_files.add(str(file_path))
+                    self.save_progress()  # Save progress after each file
                     break
                     
             # Break out of outer loop if user chose quit
@@ -289,9 +433,13 @@ Respond in JSON format:
             # Small delay to avoid API rate limits
             time.sleep(1)
             
-        # Show summary
+        # Show summary and cleanup
         self.show_summary()
         self.save_session_log()
+        
+        # If we completed all files, cleanup progress file
+        if decision != 'quit':
+            self.cleanup_progress_file()
         
     def show_summary(self):
         """Display summary of the review session."""
@@ -326,13 +474,17 @@ def main():
             sys.exit(1)
     
     # Get vault path (default to current directory)
-    vault_path = input(f"Enter vault path (default: current directory): ").strip()
-    if not vault_path:
-        vault_path = os.getcwd()
-        
-    if not os.path.exists(vault_path):
-        print(f"Vault path does not exist: {vault_path}")
-        sys.exit(1)
+    while True:
+        vault_path = input(f"Enter vault path (default: current directory): ").strip()
+        if not vault_path:
+            vault_path = os.getcwd()
+            
+        if os.path.exists(vault_path):
+            break
+        else:
+            print(f"❌ Vault path does not exist: {vault_path}")
+            print("Please enter a valid directory path or press Enter for current directory.")
+            continue
         
     # Create reviewer and start
     reviewer = ObsidianVaultReviewer(api_key, vault_path)
