@@ -354,30 +354,72 @@ Begin your response with the enhanced note content now:
         # Basic check: enhanced content should be longer than original
         if len(enhanced) < len(original):
             return False
-            
-        # Normalize whitespace for comparison (but preserve structure)
-        original_lines = [line.rstrip() for line in original.split('\n')]
-        enhanced_lines = [line.rstrip() for line in enhanced.split('\n')]
         
-        # Check that all original lines appear in the enhanced version
-        # We allow for new lines to be inserted, but all original lines must remain
-        original_line_index = 0
+        # Normalize both strings for comparison - remove extra whitespace but preserve structure
+        def normalize_text(text):
+            # Split into lines, strip each line, and remove empty lines for comparison
+            lines = [line.strip() for line in text.split('\n') if line.strip()]
+            return '\n'.join(lines)
         
-        for enhanced_line in enhanced_lines:
-            if original_line_index < len(original_lines):
-                if enhanced_line == original_lines[original_line_index]:
-                    original_line_index += 1
-                    
-        # If we've matched all original lines, the content is preserved
-        if original_line_index == len(original_lines):
+        original_normalized = normalize_text(original)
+        enhanced_normalized = normalize_text(enhanced)
+        
+        # Primary check: original content should be contained in enhanced content
+        if original_normalized in enhanced_normalized:
             return True
-            
-        # Fallback: Check if the original content exists as a substring (less strict)
-        # This handles cases where formatting might be slightly different
-        original_normalized = original.strip()
-        enhanced_normalized = enhanced.strip()
         
-        return original_normalized in enhanced_normalized
+        # Secondary check: line-by-line matching with more flexibility
+        original_lines = [line.strip() for line in original.split('\n') if line.strip()]
+        enhanced_lines = [line.strip() for line in enhanced.split('\n') if line.strip()]
+        
+        # Check that most original lines appear in the enhanced version
+        # Allow for minor formatting differences
+        matched_lines = 0
+        
+        for orig_line in original_lines:
+            for enh_line in enhanced_lines:
+                # Exact match
+                if orig_line == enh_line:
+                    matched_lines += 1
+                    break
+                # Fuzzy match - check if the core content is preserved
+                elif len(orig_line) > 10 and orig_line in enh_line:
+                    matched_lines += 1
+                    break
+                # Handle cases where formatting might change slightly
+                elif len(orig_line) > 5:
+                    # Remove special characters for comparison
+                    import re
+                    orig_clean = re.sub(r'[^\w\s]', '', orig_line.lower())
+                    enh_clean = re.sub(r'[^\w\s]', '', enh_line.lower())
+                    if orig_clean and orig_clean in enh_clean:
+                        matched_lines += 1
+                        break
+        
+        # Require at least 80% of original lines to be preserved
+        preservation_ratio = matched_lines / len(original_lines) if original_lines else 1
+        
+        # Additional safety: check for key content preservation
+        # Look for important patterns like [[links]], #tags, images, etc.
+        import re
+        
+        # Extract important elements from original
+        orig_links = re.findall(r'\[\[([^\]]+)\]\]', original)
+        orig_tags = re.findall(r'#(\w+)', original)
+        orig_images = re.findall(r'!\[[^\]]*\]\([^)]+\)', original)
+        
+        # Check these are preserved in enhanced version
+        enh_links = re.findall(r'\[\[([^\]]+)\]\]', enhanced)
+        enh_tags = re.findall(r'#(\w+)', enhanced)
+        enh_images = re.findall(r'!\[[^\]]*\]\([^)]+\)', enhanced)
+        
+        # All original links, tags, and images should be preserved
+        links_preserved = all(link in enh_links for link in orig_links)
+        tags_preserved = all(tag in enh_tags for tag in orig_tags) 
+        images_preserved = all(img in enhanced for img in orig_images)
+        
+        # Final validation: good line preservation AND important elements preserved
+        return (preservation_ratio >= 0.8 and links_preserved and tags_preserved and images_preserved)
             
     def save_enhanced_note(self, file_path: Path, enhanced_content: str) -> bool:
         """Save the enhanced note content to file."""
@@ -644,16 +686,145 @@ Begin your response with the enhanced note content now:
             with open(file_path, 'r', encoding='utf-8') as f:
                 return f.read()
         except Exception as e:
-            print(f"Error reading {file_path}: {e}")
+            tqdm.write(f"Error reading {file_path}: {e}")
             return ""
             
+    def parse_ai_response_fallback(self, response_text: str) -> Dict:
+        """Fallback parser using regex when JSON parsing fails completely."""
+        import re
+        
+        # Try to extract score using various patterns
+        score = 5  # default
+        score_patterns = [
+            r'"score":\s*(\d+)',
+            r'"score":\s*"(\d+)"',
+            r'score:\s*(\d+)',
+            r'Score:\s*(\d+)',
+            r'relevance score.*?(\d+)',
+            r'(\d+)/10',
+            r'score.*?(\d+)'
+        ]
+        
+        for pattern in score_patterns:
+            match = re.search(pattern, response_text, re.IGNORECASE)
+            if match:
+                try:
+                    score = int(match.group(1))
+                    if 0 <= score <= 10:
+                        break
+                except ValueError:
+                    continue
+        
+        # Try to extract reasoning
+        reasoning = "AI analysis completed but response format was unclear."
+        reasoning_patterns = [
+            r'"reasoning":\s*"([^"]+)"',
+            r'"reasoning":\s*([^,}]+)',
+            r'reasoning:\s*([^,}]+)',
+            r'Reasoning:\s*([^,}]+)',
+            r'because\s+([^.]+)',
+            r'This\s+([^.]+\.)' 
+        ]
+        
+        for pattern in reasoning_patterns:
+            match = re.search(pattern, response_text, re.IGNORECASE | re.DOTALL)
+            if match:
+                extracted = match.group(1).strip().strip('"').strip("'")
+                if len(extracted) > 10:  # Make sure we got something meaningful
+                    reasoning = extracted[:200] + "..." if len(extracted) > 200 else extracted
+                    break
+        
+        # Determine recommendation based on score
+        if score <= 4:
+            recommendation = "remove"
+        elif score <= 7:
+            recommendation = "enhance"
+        else:
+            recommendation = "keep"
+            
+        return {
+            "score": score,
+            "reasoning": reasoning,
+            "recommendation": recommendation
+        }
+    
+    def clean_json_response(self, json_text: str) -> str:
+        """Clean up common JSON formatting issues from AI responses."""
+        import re
+        
+        # Remove any leading/trailing whitespace
+        json_text = json_text.strip()
+        
+        # Remove any text before the first {
+        if '{' in json_text:
+            json_text = json_text[json_text.find('{'):]
+        
+        # Remove any text after the last }
+        if '}' in json_text:
+            json_text = json_text[:json_text.rfind('}') + 1]
+        
+        # Fix unquoted property names (common issue)
+        json_text = re.sub(r'(\w+):', r'"\1":', json_text)
+        
+        # Fix single quotes to double quotes
+        json_text = re.sub(r"'([^']*)'", r'"\1"', json_text)
+        
+        # Remove trailing commas before closing braces/brackets
+        json_text = re.sub(r',\s*}', '}', json_text)
+        json_text = re.sub(r',\s*]', ']', json_text)
+        
+        # Fix common number/string formatting issues
+        lines = json_text.split('\n')
+        fixed_lines = []
+        
+        for line in lines:
+            if ':' in line:
+                # Split on the first colon to separate key from value
+                parts = line.split(':', 1)
+                if len(parts) == 2:
+                    key_part = parts[0].strip()
+                    value_part = parts[1].strip()
+                    
+                    # Ensure key is properly quoted
+                    if not key_part.startswith('"') or not key_part.endswith('"'):
+                        # Remove any existing quotes and re-add them properly
+                        key_clean = key_part.strip('"').strip("'").strip()
+                        key_part = f'"{key_clean}"'
+                    
+                    # Handle value formatting
+                    if value_part.endswith(','):
+                        value_part = value_part[:-1]  # Remove trailing comma
+                        trailing_comma = ','
+                    else:
+                        trailing_comma = ''
+                    
+                    # If value is a number, don't quote it
+                    if re.match(r'^\d+$', value_part.strip()):
+                        line = f"{key_part}: {value_part}{trailing_comma}"
+                    # If value is already quoted string, fix any internal quote issues
+                    elif value_part.startswith('"') and value_part.endswith('"'):
+                        # Extract content and escape internal quotes
+                        content = value_part[1:-1]
+                        content = content.replace('"', '\\"')
+                        line = f"{key_part}: \"{content}\"{trailing_comma}"
+                    # If value is unquoted string, quote it properly
+                    else:
+                        # Clean the value and escape quotes
+                        content = value_part.strip().strip('"').strip("'")
+                        content = content.replace('"', '\\"')
+                        line = f"{key_part}: \"{content}\"{trailing_comma}"
+            
+            fixed_lines.append(line)
+        
+        return '\n'.join(fixed_lines)
+    
     def analyze_note_relevance(self, file_path: Path, content: str) -> Dict:
         """Use Gemini to analyze note relevance and provide scoring."""
         if not content.strip():
             return {
                 "score": 0,
                 "reasoning": "Empty file with no content",
-                "recommendation": "delete"
+                "recommendation": "remove"
             }
             
         prompt = f"""
@@ -674,7 +845,7 @@ Please provide:
    - 9-10: Essential content, definitely keep
 
 2. Brief reasoning for the score
-3. Recommendation: "keep" or "delete"
+3. Recommendation: "remove" (0-4), "enhance" (5-7), or "keep" (8-10)
 
 Consider factors like:
 - Content quality and depth
@@ -736,33 +907,74 @@ Consider factors like:
 
 **REMEMBER: Personal = Valuable. WikiLinks/Tags = Essential. Any note containing personal data, tracking, or financial information should score 7+ points. Notes with WikiLinks [[note name]] and tags #tag are the backbone of your knowledge network and should be strongly favored.**
 
-Respond in JSON format:
+CRITICAL: Respond with ONLY valid JSON in exactly this format (no additional text, no markdown formatting):
 {{
-    "score": <number>,
-    "reasoning": "<brief explanation>",
-    "recommendation": "<keep|delete>"
+    "score": 7,
+    "reasoning": "Your explanation here",
+    "recommendation": "enhance"
 }}
+
+JSON REQUIREMENTS:
+- Use double quotes for all strings
+- Score must be a number 0-10 (no quotes around numbers)
+- Recommendation must be exactly one of: remove, enhance, keep
+- No trailing commas
+- No additional fields or text outside the JSON object
 """
 
         try:
             response = self.model.generate_content(prompt)
             # Extract JSON from response
             response_text = response.text.strip()
+            
             # Remove markdown code blocks if present
             if response_text.startswith('```json'):
                 response_text = response_text.split('```json')[1].split('```')[0]
             elif response_text.startswith('```'):
                 response_text = response_text.split('```')[1].split('```')[0]
+            
+            # Clean up the JSON response
+            response_text = response_text.strip()
+            
+            # Try to parse JSON directly first
+            try:
+                result = json.loads(response_text)
+            except json.JSONDecodeError:
+                # If direct parsing fails, try cleaning and parsing again
+                try:
+                    cleaned_response = self.clean_json_response(response_text)
+                    result = json.loads(cleaned_response)
+                except json.JSONDecodeError:
+                    # If all JSON parsing fails, use fallback regex parser
+                    tqdm.write(f"JSON parsing failed for {file_path.name}, using fallback parser")
+                    result = self.parse_ai_response_fallback(response_text)
+            
+            # Validate the result has required fields
+            if not all(key in result for key in ['score', 'reasoning', 'recommendation']):
+                # Try fallback parser if fields are missing
+                result = self.parse_ai_response_fallback(response_text)
                 
-            result = json.loads(response_text)
+            # Validate score is in valid range
+            if not isinstance(result['score'], (int, float)) or not (0 <= result['score'] <= 10):
+                result['score'] = 5  # Default to middle score
+                
+            # Validate recommendation is valid
+            if result['recommendation'] not in ['remove', 'enhance', 'keep']:
+                if result['score'] <= 4:
+                    result['recommendation'] = 'remove'
+                elif result['score'] <= 7:
+                    result['recommendation'] = 'enhance'
+                else:
+                    result['recommendation'] = 'keep'
+            
             return result
             
         except Exception as e:
-            print(f"Error analyzing {file_path}: {e}")
+            tqdm.write(f"Error analyzing {file_path}: {e}")
             return {
                 "score": 5,
-                "reasoning": f"Analysis failed: {e}",
-                "recommendation": "keep"
+                "reasoning": "AI analysis failed - unable to parse response. This note needs manual review.",
+                "recommendation": "enhance"
             }
             
     def display_analysis(self, file_path: Path, analysis: Dict, content: str):
@@ -798,10 +1010,13 @@ Respond in JSON format:
         
         # Color-coded AI recommendation
         recommendation = analysis['recommendation'].upper()
-        if recommendation == 'DELETE':
+        if recommendation == 'REMOVE':
             rec_color = Fore.RED
             emoji = "🗑️"
-        else:
+        elif recommendation == 'ENHANCE':
+            rec_color = Fore.YELLOW
+            emoji = "✨"
+        else:  # KEEP
             rec_color = Fore.GREEN
             emoji = "✅"
             
@@ -841,10 +1056,13 @@ Respond in JSON format:
         
         # Color-coded AI recommendation
         recommendation = analysis['recommendation'].upper()
-        if recommendation == 'DELETE':
+        if recommendation == 'REMOVE':
             rec_color = Fore.RED
             emoji = "🗑️"
-        else:
+        elif recommendation == 'ENHANCE':
+            rec_color = Fore.YELLOW
+            emoji = "✨"
+        else:  # KEEP
             rec_color = Fore.GREEN
             emoji = "✅"
             
