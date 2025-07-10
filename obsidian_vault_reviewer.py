@@ -21,7 +21,11 @@ try:
     # Windows
     import msvcrt
     def getch():
-        return msvcrt.getch().decode('utf-8').lower()
+        ch = msvcrt.getch().decode('utf-8')
+        # Handle Ctrl-C (ASCII 3)
+        if ord(ch) == 3:
+            raise KeyboardInterrupt
+        return ch.lower()
 except ImportError:
     # Unix/Linux/macOS
     import tty
@@ -31,8 +35,11 @@ except ImportError:
         old_settings = termios.tcgetattr(fd)
         try:
             tty.setraw(sys.stdin.fileno())
-            ch = sys.stdin.read(1).lower()
-            return ch
+            ch = sys.stdin.read(1)
+            # Handle Ctrl-C (ASCII 3)
+            if ord(ch) == 3:
+                raise KeyboardInterrupt
+            return ch.lower()
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
@@ -226,41 +233,40 @@ class ObsidianVaultReviewer:
             or original content unchanged if enhancement fails or safety check fails.
         """
         prompt = f"""
-You are helping improve a sparse Obsidian note in a personal knowledge management system. The current note is very brief and needs enhancement.
+You are helping improve a sparse Obsidian note in a personal knowledge management system.
 
-Current Note:
+CURRENT NOTE TO ENHANCE:
 File: {file_path.name}
-Content:
+===BEGIN ORIGINAL CONTENT===
 {content}
+===END ORIGINAL CONTENT===
 
-🚨 CRITICAL SAFETY REQUIREMENTS - MUST BE FOLLOWED:
-1. **NEVER DELETE OR MODIFY ANY EXISTING CONTENT** - Every single character, word, and line from the original note MUST be preserved exactly as written
-2. **ONLY ADD NEW CONTENT** - You may only append or insert additional content, never remove or change existing text
-3. **PRESERVE ALL FORMATTING** - Keep all existing headers, lists, links, formatting, spacing, and structure exactly as they are
-4. **NO CORRECTIONS** - Do not fix typos, grammar, or formatting in the original content - leave it completely unchanged
+YOUR TASK:
+Return the enhanced note content with ALL original content preserved exactly as written, plus your enhancements.
 
-Enhancement Goals:
-Please enhance this note by adding 1-2 meaningful paragraphs that would make it more valuable in a personal "second brain" context. Focus on:
+STRICT RULES FOR ENHANCEMENT:
+1. PRESERVE ALL ORIGINAL CONTENT: Keep every character, word, line, and formatting exactly as written above
+2. ONLY ADD NEW CONTENT: You may append or insert additional content, but never modify existing text
+3. NO CORRECTIONS: Do not fix typos, grammar, or formatting in the original content
+4. ADD VALUE: Enhance with 1-2 meaningful paragraphs for personal knowledge management
 
-1. **Practical Information**: Add useful details, examples, or context
-2. **Personal Knowledge**: Include information that would be helpful for future reference  
-3. **Connections**: Suggest related concepts or potential [[WikiLinks]] to other topics
-4. **Examples**: Provide concrete examples or use cases when relevant
-5. **Structure**: Add new headers, lists, or formatting (but keep existing ones unchanged)
+ENHANCEMENT FOCUS:
+- Add practical information, examples, or context
+- Include information helpful for future reference
+- Suggest related concepts using [[WikiLinks]] to other topics
+- Provide concrete examples or use cases when relevant
+- Add new headers, lists, or formatting (but keep existing ones unchanged)
+- Make it personally useful for knowledge management
+- Aim for 2-3x the original length minimum
 
-SAFETY REQUIREMENTS (REPEATED FOR EMPHASIS):
-- ❌ NEVER delete, modify, or "correct" any existing content
-- ❌ NEVER change existing formatting, headers, or structure  
-- ❌ NEVER fix typos or grammar in the original text
-- ✅ ONLY add new content that enhances the note
-- ✅ Keep ALL original content exactly as written
-- ✅ Add substantial value (aim for 2-3x the original length minimum)
-- ✅ Use Obsidian-style [[WikiLinks]] for related concepts
-- ✅ Include practical examples or use cases
-- ✅ Make it personally useful for knowledge management
-- ✅ Use proper markdown formatting for NEW content only
+CRITICAL OUTPUT REQUIREMENTS:
+- Return ONLY the enhanced note content
+- Include ALL original content exactly as written
+- Do NOT include any instructions, explanations, or commentary
+- Do NOT include any safety requirement text in the output
+- Do NOT include any metadata about the enhancement process
 
-Return ONLY the enhanced note content (with ALL original content preserved + new additions), without any explanation or commentary.
+Begin your response with the enhanced note content now:
 """
 
         try:
@@ -273,6 +279,9 @@ Return ONLY the enhanced note content (with ALL original content preserved + new
             elif enhanced_content.startswith('```'):
                 enhanced_content = enhanced_content.split('```')[1].split('```')[0].strip()
             
+            # ADDITIONAL SAFETY CHECK: Remove any leaked prompt instructions
+            enhanced_content = self.clean_leaked_instructions(enhanced_content)
+            
             # SAFETY CHECK: Verify that all original content is preserved
             if not self.validate_content_preservation(content, enhanced_content):
                 tqdm.write(f"⚠️ Safety check failed: Original content not fully preserved in enhanced note")
@@ -284,6 +293,58 @@ Return ONLY the enhanced note content (with ALL original content preserved + new
         except Exception as e:
             tqdm.write(f"Error enhancing note: {e}")
             return content  # Return original content if enhancement fails
+            
+    def clean_leaked_instructions(self, enhanced_content: str) -> str:
+        """
+        Remove any leaked prompt instructions from the enhanced content.
+        This is a safety net to catch when the AI accidentally includes instruction text.
+        """
+        # List of instruction phrases that should never appear in the actual note content
+        instruction_indicators = [
+            "🚨 CRITICAL SAFETY REQUIREMENTS",
+            "CRITICAL SAFETY REQUIREMENTS",
+            "SAFETY REQUIREMENTS",
+            "NEVER DELETE OR MODIFY ANY EXISTING CONTENT",
+            "ONLY ADD NEW CONTENT",
+            "PRESERVE ALL FORMATTING",
+            "NO CORRECTIONS",
+            "MUST BE FOLLOWED:",
+            "Enhancement Goals:",
+            "REPEATED FOR EMPHASIS"
+        ]
+        
+        lines = enhanced_content.split('\n')
+        clean_lines = []
+        skip_mode = False
+        
+        for line in lines:
+            line_upper = line.upper()
+            
+            # Check if this line contains instruction text
+            contains_instruction = any(indicator.upper() in line_upper for indicator in instruction_indicators)
+            
+            # If we hit a safety requirements section, start skipping
+            if "SAFETY REQUIREMENT" in line_upper or "CRITICAL" in line_upper and "REQUIREMENT" in line_upper:
+                skip_mode = True
+                continue
+                
+            # If we're in skip mode and hit a line that looks like content, stop skipping
+            if skip_mode:
+                # Check if this looks like actual note content (starts with #, -, *, or regular text)
+                if (line.strip() and 
+                    not line.strip().startswith(('1.', '2.', '3.', '4.', '5.', '-', '✅', '❌')) and
+                    not any(indicator.upper() in line_upper for indicator in instruction_indicators)):
+                    skip_mode = False
+                else:
+                    continue  # Still in instruction mode, skip this line
+            
+            # If not skipping and doesn't contain instructions, keep the line
+            if not skip_mode and not contains_instruction:
+                clean_lines.append(line)
+                
+        return '\n'.join(clean_lines)
+    
+
             
     def validate_content_preservation(self, original: str, enhanced: str) -> bool:
         """
@@ -913,7 +974,7 @@ Respond in JSON format:
         # Check for existing progress
         continuing_session = False
         if self.load_progress():
-            continuing_session = self.get_yes_no_input("\nDo you want to continue the previous review session?", default="n")
+            continuing_session = self.get_yes_no_input("\nDo you want to continue the previous review session?", default="y")
             if continuing_session:
                 print("Continuing previous session...")
             else:
@@ -946,7 +1007,7 @@ Respond in JSON format:
         print("Tip: Consider backing up your vault before proceeding!")
         
         # Configure auto-decisions if user wants to
-        if self.get_yes_no_input("Configure auto-decision settings?"):
+        if self.get_yes_no_input("Configure auto-decision settings?", default="n"):
             self.configure_auto_decisions()
         
         # Save initial progress to create the file
