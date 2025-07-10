@@ -77,6 +77,30 @@ class ObsidianVaultReviewer:
         """Clear the terminal screen (cross-platform)."""
         os.system('cls' if os.name == 'nt' else 'clear')
         
+    def soft_clear_for_tqdm(self, keep_lines=3):
+        """Clear screen while preserving tqdm progress bar."""
+        # Instead of clearing entire screen, just add some space
+        for _ in range(keep_lines):
+            tqdm.write("")
+            
+    def pause_progress_bar(self, progress_bar):
+        """Temporarily pause the progress bar for clean user input."""
+        progress_bar.clear()
+        return progress_bar
+        
+    def resume_progress_bar(self, progress_bar):
+        """Resume the progress bar after user input."""
+        progress_bar.refresh()
+        return progress_bar
+        
+    def write_with_spacing(self, text, spacing_before=1, spacing_after=0):
+        """Write text with controlled spacing for better readability."""
+        for _ in range(spacing_before):
+            tqdm.write("")
+        tqdm.write(text)
+        for _ in range(spacing_after):
+            tqdm.write("")
+        
     def get_yes_no_input(self, prompt: str, default: Optional[str] = None) -> bool:
         """Get a yes/no decision using single-key input with optional default."""
         if default:
@@ -950,10 +974,11 @@ Respond in JSON format:
             for i, file_path in enumerate(md_files, 1):
                 current_position = processed_count + i
                 
-                # Clear screen for clean presentation of each file (including first one)
-                self.clear_screen()
+                # Don't clear screen at start of each file - just add spacing
+                if i > 1:  # Skip spacing for first file
+                    self.soft_clear_for_tqdm(5)
                 
-                # Show progress after clearing screen (show files completed so far)
+                # Show progress
                 files_completed = processed_count + i - 1
                 tqdm.write(f"Progress: {files_completed}/{total_files} files processed ({files_completed/total_files*100:.1f}%)")
                 tqdm.write("")  # Add blank line for readability
@@ -983,12 +1008,15 @@ Respond in JSON format:
                     self.save_progress()
                     decision = 'delete'
                 else:
-                    # Display results using tqdm.write to avoid interfering with progress bar
+                    # Display results using tqdm.write
                     self.display_analysis_with_tqdm(file_path, analysis, content)
                     
                     # Get user decision (loop until they make a final choice)
                     while True:
+                        # Temporarily clear progress bar for user input
+                        progress_bar.clear()
                         decision = self.get_user_decision(analysis)
+                        progress_bar.refresh()
                         
                         if decision == 'quit':
                             tqdm.write("\nReview process stopped by user.")
@@ -996,9 +1024,9 @@ Respond in JSON format:
                             break
                         elif decision == 'view':
                             self.display_full_content_with_tqdm(file_path, content)
-                            # Clear screen after viewing full content and re-display analysis
-                            tqdm.write('\n' * 80)
-                            # Show progress after clearing screen
+                            # Add spacing after viewing
+                            self.soft_clear_for_tqdm(3)
+                            # Show progress
                             files_completed = processed_count + i - 1
                             tqdm.write(f"Progress: {files_completed}/{total_files} files processed ({files_completed/total_files*100:.1f}%)")
                             tqdm.write("")  # Add blank line for readability
@@ -1010,8 +1038,11 @@ Respond in JSON format:
                             enhanced_content = self.enhance_note(file_path, content)
                             
                             if enhanced_content != content:
+                                # Don't clear screen here - just add spacing
+                                self.soft_clear_for_tqdm(2)
+                                
                                 # Show the enhanced content
-                                tqdm.write(f"\n{Fore.GREEN}✨ Enhanced Content Preview:{Style.RESET_ALL}")
+                                tqdm.write(f"{Fore.GREEN}✨ Enhanced Content Preview:{Style.RESET_ALL}")
                                 tqdm.write("="*80)
                                 preview = self.format_markdown_preview(enhanced_content, 800)
                                 tqdm.write(preview)
@@ -1019,7 +1050,11 @@ Respond in JSON format:
                                 
                                 # Ask user if they want to save the enhancement
                                 tqdm.write(f"\nEnhanced from {len(content)} to {len(enhanced_content)} characters ({len(enhanced_content)/len(content):.1f}x longer)")
+                                
+                                # Temporarily pause tqdm to get user input
+                                progress_bar.clear()
                                 save_enhancement = self.get_yes_no_input("Save this enhanced version?")
+                                progress_bar.refresh()
                                 
                                 if save_enhancement:
                                     if self.save_enhanced_note(file_path, enhanced_content):
@@ -1030,13 +1065,15 @@ Respond in JSON format:
                                         tqdm.write(f"\n🔄 Re-analyzing enhanced note...")
                                         new_analysis = self.analyze_note_relevance(file_path, enhanced_content)
                                         
-                                        # Clear screen and show new analysis
-                                        tqdm.write('\n' * 80)
+                                        # Add spacing instead of clearing
+                                        self.soft_clear_for_tqdm(3)
+                                        
+                                        # Show progress
                                         files_completed = processed_count + i - 1
                                         tqdm.write(f"Progress: {files_completed}/{total_files} files processed ({files_completed/total_files*100:.1f}%)")
                                         tqdm.write("")
                                         
-                                        tqdm.write(f"\n{Fore.GREEN}🎉 ENHANCED NOTE RE-ANALYSIS:{Style.RESET_ALL}")
+                                        tqdm.write(f"{Fore.GREEN}🎉 ENHANCED NOTE RE-ANALYSIS:{Style.RESET_ALL}")
                                         tqdm.write(f"📈 Score improved from {analysis['score']}/10 to {new_analysis['score']}/10 ({'+' if new_analysis['score'] > analysis['score'] else ''}{new_analysis['score'] - analysis['score']} points)")
                                         tqdm.write("")
                                         
@@ -1062,16 +1099,20 @@ Respond in JSON format:
                                         # Ask final decision on enhanced note
                                         enhanced_decision = None
                                         while True:
+                                            # Pause tqdm for user input
+                                            progress_bar.clear()
                                             enhanced_decision = self.get_user_decision(new_analysis)
+                                            progress_bar.refresh()
+                                            
                                             if enhanced_decision in ['keep', 'delete', 'skip', 'quit']:
                                                 break
                                             elif enhanced_decision == 'view':
                                                 self.display_full_content_with_tqdm(file_path, enhanced_content)
-                                                tqdm.write('\n' * 80)
+                                                self.soft_clear_for_tqdm(3)
                                                 files_completed = processed_count + i - 1
                                                 tqdm.write(f"Progress: {files_completed}/{total_files} files processed ({files_completed/total_files*100:.1f}%)")
                                                 tqdm.write("")
-                                                tqdm.write(f"\n{Fore.GREEN}🎉 ENHANCED NOTE RE-ANALYSIS:{Style.RESET_ALL}")
+                                                tqdm.write(f"{Fore.GREEN}🎉 ENHANCED NOTE RE-ANALYSIS:{Style.RESET_ALL}")
                                                 tqdm.write(f"📈 Score improved from {analysis['score']}/10 to {new_analysis['score']}/10 ({'+' if new_analysis['score'] > analysis['score'] else ''}{new_analysis['score'] - analysis['score']} points)")
                                                 tqdm.write("")
                                                 self.display_analysis_with_tqdm(file_path, new_analysis, enhanced_content)
@@ -1100,8 +1141,8 @@ Respond in JSON format:
                                         continue
                                 else:
                                     tqdm.write("Enhancement cancelled. Original note unchanged.")
-                                    # Clear screen and re-display analysis
-                                    tqdm.write('\n' * 80)
+                                    # Add spacing and re-display analysis
+                                    self.soft_clear_for_tqdm(3)
                                     files_completed = processed_count + i - 1
                                     tqdm.write(f"Progress: {files_completed}/{total_files} files processed ({files_completed/total_files*100:.1f}%)")
                                     tqdm.write("")
