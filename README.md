@@ -80,18 +80,39 @@ Very low-scoring notes can be auto-deleted. This feature is disabled by default 
 Configure auto-decision settings? (y/n): y
 
 Auto-Decision Configuration
-Enable auto-keep for high-scoring notes? (currently: ON) (y/n): y
+Enable auto-keep for high-scoring notes? (currently: YES) (y/n): y
 Current auto-keep threshold: 7
 Enter new threshold (7-10) or press Enter to keep current: 8
 
-Enable auto-delete for low-scoring notes? (currently: OFF) (y/n): n
+Enable auto-delete for low-scoring notes? (currently: NO) (y/n): n
 
-Show auto-decision notifications? (currently: ON) (y/n): y
+Show auto-decision notifications? (currently: YES) (y/n): y
+
+Configure file size limit? (currently: 20KB max) (y/n): n
+
+Show skipped large files? (currently: YES) (y/n): y
+
+Include subfolders when scanning? (currently: YES) (y/n): y
 
 Configuration saved!
 Auto-keep: Notes scoring 8+ will be kept automatically
 Notifications: Enabled
+File size limit: 20KB maximum
+Show skipped files: Enabled
+Subfolders: Included
 ```
+
+### Subfolder Configuration
+
+The tool can be configured to scan only the root directory or include all subfolders:
+
+- **Include Subfolders (Default)**: Scans all markdown files recursively throughout the vault
+- **Root Only**: Scans only markdown files in the vault root directory, ignoring subfolders
+
+This is useful for:
+- **Large Vaults**: Skip subfolder archives or reference materials
+- **Organized Vaults**: Focus only on top-level notes while preserving organized subfolder content
+- **Selective Cleanup**: Clean main notes while keeping project-specific subfolder notes untouched
 
 ## AI Note Enhancement System
 
@@ -351,15 +372,15 @@ Files with encoding issues are skipped with warnings. UTF-8 encoding is assumed 
 **Rate Limit Issues:**
 Script includes intelligent rate limiting handling with exponential backoff:
 - **Automatic Detection**: Detects API rate limiting errors automatically
-- **Smart Retry**: Uses exponential backoff (1s → 2s → 4s → 8s → 16s) with random jitter
+- **Smart Retry**: Uses exponential backoff (5s → 10s → 20s → 40s → 60s) with random jitter
 - **Progress Preservation**: Shows retry status without losing your review progress
 - **Maximum Attempts**: Retries up to 5 times before giving up on a request
 - **Graceful Degradation**: If all retries fail, the review continues with manual scoring
 
 Example rate limit handling:
 ```
-⏳ API rate limited. Waiting 2.3s before retry 1/5...
-⏳ API rate limited. Waiting 4.7s before retry 2/5...
+⏳ API rate limited. Waiting 5.3s before retry 1/5...
+⏳ API rate limited. Waiting 10.7s before retry 2/5...
 ```
 
 ### Performance Tips
@@ -368,6 +389,8 @@ Example rate limit handling:
 3. **Use Enhancement Liberally**: Better to enhance and keep than to delete potentially useful content
 4. **Progressive Cleanup**: Review in chunks, use session continuation for large vaults
 5. **Backup First**: Always backup before major cleanup sessions
+6. **Smart Token Management**: Tool uses 80% of Gemini's 1M token limit, allowing vaults up to ~800K tokens to load full content
+7. **Subfolder Control**: Exclude subfolders to focus on main notes and reduce token usage
 
 ## License & Responsibility
 

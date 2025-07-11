@@ -17,6 +17,7 @@ import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable
 from colorama import init, Fore, Style
 from tqdm import tqdm
+from count_tokens.count import count_tokens_in_string
 
 # Cross-platform single character input
 try:
@@ -65,26 +66,50 @@ class ObsidianVaultReviewer:
         # Save this vault path as the most recent
         self.save_last_used_vault_path(vault_path)
         
-        # Configuration for auto-decisions
-        self.config = {
-            "auto_keep_enabled": True,
-            "auto_keep_threshold": 7,
-            "auto_delete_enabled": False,
-            "auto_delete_threshold": 2,
-            "show_auto_decisions": True
-        }
+        # Load or initialize configuration
+        self.config_file = Path.home() / ".obsidian_vault_reviewer_settings.json"
+        self.config = self.load_config()
+        
+        # Vault knowledge base cache
+        self.vault_knowledge = {}  # Will store all note contents
+        self.vault_knowledge_summary = ""  # Summary if full content is too large
+        self.token_limit = 1000000  # Gemini 2.0 Flash has 1M token context window
+        self.knowledge_loaded = False
+        
+        # Initialize count-tokens for accurate token counting
+        try:
+            # Test count-tokens functionality (no encoding parameter needed)
+            test_count = count_tokens_in_string("test")
+            print(f"✅ Initialized count-tokens successfully")
+            self.token_counter_available = True
+        except Exception as e:
+            print(f"❌ Failed to initialize count-tokens: {e}")
+            self.token_counter_available = False
         
     def setup_gemini(self):
         """Configure Gemini API."""
         genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel('gemini-2.5-flash-lite-preview-06-17')
+        self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
         
     def setup_signal_handlers(self):
         """Set up signal handlers to save progress on interruption."""
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
         
-    def handle_rate_limiting(self, func, *args, max_retries=5, base_delay=1, **kwargs):
+    def is_file_size_acceptable(self, file_path: Path) -> tuple[bool, int]:
+        """
+        Check if file size is within acceptable limits.
+        Returns (is_acceptable, size_in_kb)
+        """
+        try:
+            size_bytes = file_path.stat().st_size
+            size_kb = size_bytes / 1024
+            max_size_kb = self.config.get("max_file_size_kb", 30)
+            return size_kb <= max_size_kb, int(size_kb)
+        except Exception:
+            return False, 0
+        
+    def handle_rate_limiting(self, func, *args, max_retries=5, base_delay=5, **kwargs):
         """
         Handle API rate limiting with exponential backoff.
         
@@ -92,7 +117,7 @@ class ObsidianVaultReviewer:
             func: The function to call
             *args: Arguments for the function
             max_retries: Maximum number of retry attempts (default: 5)
-            base_delay: Base delay in seconds (default: 1)
+            base_delay: Base delay in seconds (default: 5)
             **kwargs: Keyword arguments for the function
             
         Returns:
@@ -199,7 +224,7 @@ class ObsidianVaultReviewer:
         print("="*50)
         
         # Auto-keep configuration
-        if self.get_yes_no_input(f"Enable auto-keep for high-scoring notes? (currently: {'ON' if self.config['auto_keep_enabled'] else 'OFF'})"):
+        if self.get_yes_no_input(f"Enable auto-keep for high-scoring notes? (currently: {'YES' if self.config['auto_keep_enabled'] else 'NO'})"):
             self.config["auto_keep_enabled"] = True
             print(f"Current auto-keep threshold: {self.config['auto_keep_threshold']}")
             print("Enter new threshold (7-10) or press Enter to keep current: ", end="", flush=True)
@@ -218,7 +243,7 @@ class ObsidianVaultReviewer:
             self.config["auto_keep_enabled"] = False
             
         # Auto-delete configuration
-        if self.get_yes_no_input(f"Enable auto-delete for low-scoring notes? (currently: {'ON' if self.config['auto_delete_enabled'] else 'OFF'})"):
+        if self.get_yes_no_input(f"Enable auto-delete for low-scoring notes? (currently: {'YES' if self.config['auto_delete_enabled'] else 'NO'})"):
             self.config["auto_delete_enabled"] = True
             print(f"Current auto-delete threshold: {self.config['auto_delete_threshold']}")
             print("Enter new threshold (0-3) or press Enter to keep current: ", end="", flush=True)
@@ -237,8 +262,35 @@ class ObsidianVaultReviewer:
             self.config["auto_delete_enabled"] = False
             
         # Show auto-decisions
-        show_auto = self.get_yes_no_input(f"Show auto-decision notifications? (currently: {'ON' if self.config['show_auto_decisions'] else 'OFF'})")
+        show_auto = self.get_yes_no_input(f"Show auto-decision notifications? (currently: {'YES' if self.config['show_auto_decisions'] else 'NO'})")
         self.config["show_auto_decisions"] = show_auto
+        
+        # File size limit configuration
+        if self.get_yes_no_input(f"Configure file size limit? (currently: {self.config['max_file_size_kb']}KB max)"):
+            print(f"Current max file size: {self.config['max_file_size_kb']}KB")
+            print("Enter new size limit in KB (10-100) or press Enter to keep current: ", end="", flush=True)
+            try:
+                size_input = input().strip()
+                if size_input:
+                    size_kb = int(size_input)
+                    if 10 <= size_kb <= 100:
+                        self.config["max_file_size_kb"] = size_kb
+                        print(f"File size limit set to: {size_kb}KB")
+                    else:
+                        print("Invalid size. Keeping current value.")
+            except ValueError:
+                print("Invalid input. Keeping current value.")
+        
+        # Show skipped files option
+        show_skipped = self.get_yes_no_input(f"Show skipped large files? (currently: {'YES' if self.config['show_skipped_files'] else 'NO'})")
+        self.config["show_skipped_files"] = show_skipped
+        
+        # Subfolder inclusion option
+        include_subfolders = self.get_yes_no_input(f"Include subfolders when scanning? (currently: {'YES' if self.config['include_subfolders'] else 'NO'})")
+        self.config["include_subfolders"] = include_subfolders
+        
+        # Save configuration to file
+        self.save_config()
         
         print(f"\n{Fore.GREEN}✅ Configuration saved!{Style.RESET_ALL}")
         if self.config["auto_keep_enabled"]:
@@ -246,6 +298,10 @@ class ObsidianVaultReviewer:
         if self.config["auto_delete_enabled"]:
             print(f"   Auto-delete: Notes scoring {self.config['auto_delete_threshold']} or below will be deleted automatically")
         print(f"   Notifications: {'Enabled' if self.config['show_auto_decisions'] else 'Disabled'}")
+        print(f"   File size limit: {self.config['max_file_size_kb']}KB maximum")
+        print(f"   Show skipped files: {'Enabled' if self.config['show_skipped_files'] else 'Disabled'}")
+        print(f"   Subfolders: {'Included' if self.config['include_subfolders'] else 'Root only'}")
+        print(f"   Settings saved to: {self.config_file}")
         print("")
         
     def check_auto_decision(self, file_path: Path, analysis: Dict) -> Optional[str]:
@@ -272,6 +328,395 @@ class ObsidianVaultReviewer:
             
         return None
         
+    def estimate_token_count(self, text: str) -> int:
+        """
+        Accurately estimate token count using count-tokens package.
+        """
+        try:
+            if self.token_counter_available and text.strip():
+                # Use count-tokens (uses cl100k_base encoding by default)
+                return count_tokens_in_string(text)
+            else:
+                # Fallback to character-based estimation
+                return len(text) // 4
+        except Exception as e:
+            # Fallback to character-based estimation
+            return len(text) // 4
+        
+    def load_vault_knowledge(self):
+        """
+        Load all vault notes into memory for comparative analysis.
+        If content exceeds token limit, create summaries instead.
+        """
+        if self.knowledge_loaded:
+            return
+            
+        print("\n📚 Loading vault knowledge base for comparative analysis...")
+        
+        try:
+            # Find all markdown files (.md extension only)
+            # Respect subfolder configuration
+            if self.config.get("include_subfolders", True):
+                md_files = list(self.vault_path.rglob("*.md"))
+                scan_type = "recursively (including subfolders)"
+            else:
+                md_files = list(self.vault_path.glob("*.md"))
+                scan_type = "in root directory only"
+                
+            print(f"Found {len(md_files)} markdown files (.md) - scanning {scan_type}")
+            
+            # Filter out any non-markdown files that might have slipped through
+            md_files = [f for f in md_files if f.suffix.lower() == '.md']
+            
+            # Filter by file size
+            acceptable_files = []
+            skipped_files = []
+            max_size_kb = self.config.get("max_file_size_kb", 30)
+            
+            for file_path in md_files:
+                is_acceptable, size_kb = self.is_file_size_acceptable(file_path)
+                if is_acceptable:
+                    acceptable_files.append(file_path)
+                else:
+                    skipped_files.append((file_path, size_kb))
+            
+            md_files = acceptable_files
+            total_files = len(md_files)
+            total_chars = 0
+            loaded_count = 0
+            
+            # Report filtering results
+            if skipped_files:
+                print(f"📏 Filtered by size: {len(md_files)} files ≤{max_size_kb}KB, {len(skipped_files)} files skipped")
+                if self.config.get("show_skipped_files", True) and len(skipped_files) <= 10:
+                    print("   Skipped files:")
+                    for file_path, size_kb in skipped_files[:10]:
+                        print(f"     - {file_path.name} ({size_kb}KB)")
+                    if len(skipped_files) > 10:
+                        print(f"     ... and {len(skipped_files) - 10} more")
+            else:
+                print(f"📏 All {len(md_files)} files are ≤{max_size_kb}KB")
+            
+            # First pass: calculate total size and tokens
+            print(f"Scanning {total_files} markdown files...")
+            all_content = []
+            for file_path in tqdm(md_files, desc="Calculating vault size"):
+                try:
+                    content = self.read_file_content(file_path)
+                    if content.strip():  # Only count non-empty markdown files
+                        total_chars += len(content)
+                        all_content.append(content)
+                except:
+                    pass
+                    
+            # Test count-tokens with a small sample first
+            test_text = "This is a test sentence to verify count-tokens is working correctly."
+            test_tokens = self.estimate_token_count(test_text)
+            expected_range = (10, 20)  # Should be around 15 tokens
+            
+            if test_tokens < expected_range[0] or test_tokens > expected_range[1]:
+                print(f"⚠️ Token counting may be inaccurate. Test: '{test_text}' = {test_tokens} tokens")
+                print(f"Expected range: {expected_range[0]}-{expected_range[1]} tokens")
+            else:
+                print(f"✅ Token counting verified: '{test_text}' = {test_tokens} tokens")
+            
+            # Calculate tokens for the entire vault content
+            print("🔢 Calculating tokens for entire vault...")
+            
+            # For large vaults, estimate tokens by sampling instead of processing entire content
+            if len(all_content) > 100:
+                # Sample 100 random notes for estimation
+                import random
+                sample_content = random.sample(all_content, min(100, len(all_content)))
+                sample_text = "\n\n".join(sample_content)
+                sample_chars = len(sample_text)
+                sample_tokens = self.estimate_token_count(sample_text)
+                
+                # Extrapolate to full vault
+                if sample_chars > 0:
+                    token_ratio = sample_tokens / sample_chars
+                    estimated_tokens = int(total_chars * token_ratio)
+                else:
+                    estimated_tokens = total_chars // 4
+                    
+                print(f"📊 Sampled {len(sample_content)} notes for estimation")
+                print(f"📊 Sample: {sample_chars:,} chars = {sample_tokens:,} tokens")
+            else:
+                # For small vaults, process all content
+                vault_text = "\n\n".join(all_content)
+                estimated_tokens = self.estimate_token_count(vault_text)
+            
+            # Show token density
+            token_density = estimated_tokens / total_chars if total_chars > 0 else 0
+            print(f"📊 Token density: {token_density:.3f} tokens per character")
+            
+            # Verify token calculation makes sense
+            if token_density < 0.1 or token_density > 0.5:
+                print(f"⚠️ Unusual token density detected!")
+                print(f"   Expected range: 0.15-0.35 tokens per character")
+                print(f"   Actual: {token_density:.3f}")
+                if token_density < 0.1:
+                    print(f"   This suggests tokens are being under-counted")
+                else:
+                    print(f"   This suggests tokens are being over-counted")
+            print(f"\nVault statistics:")
+            print(f"  Total files: {total_files}")
+            print(f"  Total characters: {total_chars:,}")
+            print(f"  Estimated tokens: {estimated_tokens:,}")
+            print(f"  Token limit: {self.token_limit:,}")
+            
+            # Decide loading strategy
+            if estimated_tokens < self.token_limit * 0.8:  # Use 80% of limit for safety
+                # Load full content
+                print("\n✅ Loading full vault content (within token limits)...")
+                
+                for file_path in tqdm(md_files, desc="Loading markdown notes"):
+                    try:
+                        content = self.read_file_content(file_path)
+                        if content.strip():  # Only store non-empty markdown notes
+                            note_title = file_path.stem
+                            self.vault_knowledge[note_title] = {
+                                'path': str(file_path.relative_to(self.vault_path)),
+                                'content': content,
+                                'length': len(content)
+                            }
+                            loaded_count += 1
+                    except Exception as e:
+                        pass
+                        
+                print(f"✅ Loaded {loaded_count} markdown notes into memory")
+                self.knowledge_loaded = True
+                
+            else:
+                # Create summaries for large vaults
+                print(f"\n⚠️ Vault too large for full content ({estimated_tokens:,} tokens > {int(self.token_limit * 0.8):,} limit). Creating summaries...")
+                
+                # Load titles and brief excerpts from markdown files
+                for file_path in tqdm(md_files, desc="Creating markdown summaries"):
+                    try:
+                        content = self.read_file_content(file_path)
+                        if content.strip():
+                            note_title = file_path.stem
+                            # Store title, path, and first 500 chars
+                            self.vault_knowledge[note_title] = {
+                                'path': str(file_path.relative_to(self.vault_path)),
+                                'excerpt': content[:500] + "..." if len(content) > 500 else content,
+                                'length': len(content),
+                                'full_content': False
+                            }
+                            loaded_count += 1
+                    except:
+                        pass
+                        
+                print(f"✅ Created summaries for {loaded_count} markdown notes")
+                self.knowledge_loaded = True
+                
+                # Create a high-level vault summary
+                self.create_vault_summary()
+                
+        except Exception as e:
+            print(f"❌ Error loading vault knowledge: {e}")
+            print("Continuing without full vault context...")
+            
+    def create_vault_summary(self):
+        """Create a high-level summary of the vault for large vaults."""
+        try:
+            # Use the smart categorization system
+            categories = self.categorize_vault_notes()
+                
+            # Build summary
+            summary_parts = [f"Vault contains {len(self.vault_knowledge)} notes in categories:"]
+            for cat, notes in sorted(categories.items(), key=lambda x: len(x[1]), reverse=True)[:20]:
+                summary_parts.append(f"  - {cat}: {len(notes)} notes")
+                
+            self.vault_knowledge_summary = "\n".join(summary_parts)
+            print(f"\n📊 Vault summary created with {len(categories)} categories")
+            
+        except Exception as e:
+            print(f"Warning: Could not create vault summary: {e}")
+            # Fallback to simple categorization
+            categories = {}
+            for title, info in self.vault_knowledge.items():
+                category = title.split()[0] if ' ' in title else "Misc"
+                if category not in categories:
+                    categories[category] = []
+                categories[category].append(title)
+            print(f"📊 Fallback categorization created {len(categories)} categories")
+            
+    def get_comprehensive_vault_context(self) -> str:
+        """
+        Get comprehensive vault context for smart analysis.
+        Returns structured information about the entire vault.
+        """
+        if not self.knowledge_loaded:
+            return "No vault context available."
+            
+        context_parts = []
+        
+        # Vault overview
+        context_parts.append(f"VAULT OVERVIEW:")
+        context_parts.append(f"Total notes: {len(self.vault_knowledge)}")
+        
+        # If we have full content, provide comprehensive context
+        if any(info.get('content') for info in self.vault_knowledge.values()):
+            # Categorize notes by topic/type
+            categories = self.categorize_vault_notes()
+            context_parts.append(f"\nNOTE CATEGORIES:")
+            for category, notes in sorted(categories.items(), key=lambda x: len(x[1]), reverse=True)[:15]:
+                context_parts.append(f"  {category}: {len(notes)} notes")
+                # Show a few example titles
+                examples = ", ".join(notes[:3])
+                if len(notes) > 3:
+                    examples += f", ... (+{len(notes)-3} more)"
+                context_parts.append(f"    Examples: {examples}")
+            
+            # Show all note titles for reference
+            context_parts.append(f"\nALL NOTE TITLES:")
+            all_titles = sorted(self.vault_knowledge.keys())
+            context_parts.append(", ".join(all_titles))
+            
+        else:
+            # Use summary for large vaults
+            context_parts.append(f"\nVAULT SUMMARY:")
+            context_parts.append(self.vault_knowledge_summary)
+            
+        return "\n".join(context_parts)
+    
+    def categorize_vault_notes(self) -> Dict[str, List[str]]:
+        """Categorize vault notes by topic/type using smart pattern matching."""
+        categories = {}
+        
+        # Define comprehensive categorization rules
+        category_rules = {
+            # Technology & Cloud
+            "AWS/Cloud": ['aws', 'amazon', 'ec2', 's3', 'lambda', 'cloudfront', 'route', 'elb', 'rds', 'dynamodb', 'sqs', 'sns', 'cloudwatch', 'iam', 'vpc', 'cloudformation'],
+            "Google Cloud": ['google', 'gcp', 'firebase', 'bigquery', 'kubernetes', 'gke'],
+            "Microsoft/Azure": ['microsoft', 'azure', 'office', 'outlook', 'teams', 'sharepoint'],
+            "Apple/iOS": ['apple', 'ios', 'swift', 'xcode', 'macos', 'iphone', 'ipad'],
+            
+            # Programming & Development
+            "Python": ['python', 'django', 'flask', 'pandas', 'numpy', 'jupyter', 'pip'],
+            "JavaScript/Web": ['javascript', 'js', 'react', 'vue', 'angular', 'node', 'npm', 'html', 'css'],
+            "DevOps/Tools": ['docker', 'kubernetes', 'git', 'github', 'jenkins', 'terraform', 'ansible', 'linux', 'bash', 'shell'],
+            "Databases": ['mysql', 'postgresql', 'mongodb', 'redis', 'database', 'sql'],
+            
+            # AI & Data
+            "AI/Machine Learning": ['ai', 'machine', 'learning', 'neural', 'deep', 'tensorflow', 'pytorch', 'model', 'algorithm'],
+            "Data Science": ['data', 'analytics', 'visualization', 'statistics', 'analysis'],
+            
+            # Business & Finance
+            "Business/Finance": ['business', 'finance', 'money', 'investment', 'tax', 'accounting', 'revenue', 'profit', 'budget'],
+            "Cryptocurrency": ['bitcoin', 'crypto', 'blockchain', 'ethereum', 'defi', 'nft'],
+            
+            # Personal & Life
+            "Health/Fitness": ['health', 'fitness', 'exercise', 'diet', 'nutrition', 'medical', 'doctor'],
+            "Travel": ['travel', 'trip', 'vacation', 'flight', 'hotel', 'country', 'city'],
+            "Learning/Education": ['course', 'book', 'tutorial', 'learning', 'study', 'education', 'university'],
+            
+            # Project Management
+            "Projects": ['project', 'task', 'todo', 'planning', 'milestone', 'deadline'],
+            "Meetings/Events": ['meeting', 'conference', 'event', 'presentation', 'workshop'],
+            
+            # Personal Knowledge
+            "Personal Notes": ['journal', 'diary', 'thoughts', 'ideas', 'reflection', 'personal'],
+            "Reference": ['reference', 'cheat', 'sheet', 'guide', 'documentation', 'manual'],
+        }
+        
+        for title, info in self.vault_knowledge.items():
+            title_lower = title.lower()
+            category = "Uncategorized"
+            
+            # Check against category rules
+            for cat_name, keywords in category_rules.items():
+                if any(keyword in title_lower for keyword in keywords):
+                    category = cat_name
+                    break
+            
+            # Special handling for single-word technical terms
+            if category == "Uncategorized" and ' ' not in title:
+                if title_lower in ['git', 'docker', 'kubernetes', 'linux', 'bash', 'vim', 'ssh']:
+                    category = "DevOps/Tools"
+                elif title_lower in ['python', 'javascript', 'java', 'css', 'html', 'sql']:
+                    category = "Programming Languages"
+                elif title_lower in ['aws', 'gcp', 'azure']:
+                    category = "Cloud Platforms"
+                elif len(title) <= 4 and title.isupper():  # Acronyms like API, REST, HTTP
+                    category = "Technical Acronyms"
+                else:
+                    category = "Single Concepts"
+            
+            # If still uncategorized, use first word as category (but clean it up)
+            if category == "Uncategorized" and ' ' in title:
+                first_word = title.split()[0]
+                if len(first_word) > 2:  # Avoid very short categories
+                    category = first_word.capitalize()
+                else:
+                    category = "Misc"
+            
+            if category not in categories:
+                categories[category] = []
+            categories[category].append(title)
+        
+        # Merge small categories into "Misc"
+        final_categories = {}
+        misc_notes = []
+        
+        for cat_name, notes in categories.items():
+            if len(notes) >= 3:  # Keep categories with 3+ notes
+                final_categories[cat_name] = notes
+            else:
+                misc_notes.extend(notes)
+        
+        if misc_notes:
+            final_categories["Misc"] = misc_notes
+            
+        return final_categories
+
+    def get_vault_context_for_analysis(self, current_file: Path) -> str:
+        """
+        Get relevant vault context for analyzing a specific note.
+        Returns a context string optimized for the current analysis.
+        """
+        if not self.knowledge_loaded:
+            return ""
+            
+        context_parts = []
+        
+        # If we have full content loaded
+        if any(info.get('content') for info in self.vault_knowledge.values()):
+            # Find related notes (simple keyword matching)
+            current_title = current_file.stem
+            current_words = set(current_title.lower().split())
+            
+            related_notes = []
+            for title, info in self.vault_knowledge.items():
+                if title == current_title:
+                    continue
+                    
+                title_words = set(title.lower().split())
+                if current_words & title_words:  # Common words
+                    related_notes.append((title, info))
+                    
+            # Add up to 10 most relevant notes
+            if related_notes:
+                context_parts.append("RELATED NOTES IN VAULT:")
+                for title, info in related_notes[:10]:
+                    if 'content' in info:
+                        preview = info['content'][:200] + "..." if len(info['content']) > 200 else info['content']
+                    else:
+                        preview = info.get('excerpt', '')
+                    context_parts.append(f"\n[{title}]:\n{preview}")
+            
+            # Also add vault overview for context
+            context_parts.append(f"\nVAULT OVERVIEW: {len(self.vault_knowledge)} total notes")
+                
+        else:
+            # Use summary for large vaults
+            context_parts.append("VAULT OVERVIEW:")
+            context_parts.append(self.vault_knowledge_summary)
+            
+        return "\n".join(context_parts)
+
     def scan_vault_for_existing_notes(self) -> Dict[str, str]:
         """
         Scan the entire vault to build a map of existing note titles to their file paths.
@@ -280,8 +725,19 @@ class ObsidianVaultReviewer:
         existing_notes = {}
         
         try:
-            # Find all markdown files in the vault
+            # If vault knowledge is already loaded, use it
+            if self.knowledge_loaded:
+                for note_title, info in self.vault_knowledge.items():
+                    existing_notes[note_title] = info['path']
+                return existing_notes
+                
+            # Otherwise, do a quick scan
+            # Find all markdown files in the vault (.md extension only)
             md_files = list(self.vault_path.rglob("*.md"))
+            md_files = [f for f in md_files if f.suffix.lower() == '.md']  # Ensure only .md files
+            
+            # Filter by file size
+            md_files = [f for f in md_files if self.is_file_size_acceptable(f)[0]]
             
             for file_path in md_files:
                 # Use the filename without extension as the note title
@@ -308,34 +764,47 @@ class ObsidianVaultReviewer:
             
         return existing_notes
         
-    def identify_atomic_concepts(self, content: str, existing_notes: Dict[str, str]) -> List[str]:
+    def identify_atomic_concepts(self, content: str, file_path: Path) -> List[str]:
         """
         Use AI to identify concepts in the content that should be atomic notes.
+        Now uses full vault context for smarter concept identification.
         """
-        # Create a list of existing note titles for the AI to reference
-        existing_titles = list(existing_notes.keys())[:50]  # Limit to avoid token overflow
-        existing_titles_str = "\n".join([f"- {title}" for title in existing_titles])
+        if not self.knowledge_loaded:
+            return []
+            
+        # Get comprehensive vault context
+        vault_context = self.get_comprehensive_vault_context()
         
         prompt = f"""
 Analyze this note content and identify concepts that should be atomic notes in a second brain/Zettelkasten system.
 
+CURRENT NOTE: {file_path.name}
 CONTENT TO ANALYZE:
-{content[:1500]}
+{content}
 
-EXISTING NOTES IN VAULT (for reference):
-{existing_titles_str}
+FULL VAULT KNOWLEDGE CONTEXT:
+{vault_context}
+
+SMART ATOMIC NOTE IDENTIFICATION:
+Using the full vault context above, identify concepts that:
+1. Are mentioned in this note but don't have dedicated notes yet
+2. Would benefit multiple notes if extracted as atomic concepts  
+3. Represent foundational knowledge that appears across the vault
+4. Fill gaps in the existing knowledge network
+5. Would create valuable connections between existing notes
 
 ATOMIC NOTE PRINCIPLES:
 - Each note should contain ONE concept or idea
 - Notes should be understandable on their own
 - Notes should be linkable and reusable
 - Focus on concepts that appear multiple times or are foundational
+- Avoid duplicating existing notes (check vault context carefully)
 
-IDENTIFY ATOMIC CONCEPTS FROM THE CONTENT:
-1. Look for key concepts, terms, or ideas mentioned
-2. Consider what concepts could be split out into separate notes
-3. Think about what supporting concepts would be useful
-4. Consider both explicit concepts (named) and implicit ones (ideas discussed)
+IDENTIFY MISSING ATOMIC CONCEPTS:
+1. Scan the vault context to see what concepts already exist
+2. Look for concepts in this note that would benefit the entire vault
+3. Consider concepts that would bridge knowledge gaps
+4. Think about foundational concepts that support multiple areas
 
 Return a JSON list of atomic concept titles that should exist as separate notes:
 {{
@@ -347,11 +816,11 @@ Return a JSON list of atomic concept titles that should exist as separate notes:
 }}
 
 IMPORTANT:
-- Focus on 3-5 key concepts maximum
+- Focus on 2-4 key concepts maximum (quality over quantity)
 - Use clear, descriptive titles (2-4 words)
-- Don't suggest concepts that already exist in the vault
-- Prioritize concepts that would be useful across multiple notes
-- Think about the "one idea per note" principle
+- DON'T suggest concepts that already exist in the vault (check the context above)
+- Prioritize concepts that would be useful across multiple existing notes
+- Consider how these concepts would connect to existing notes via [[WikiLinks]]
 """
 
         try:
@@ -377,16 +846,52 @@ IMPORTANT:
     def create_atomic_note(self, concept_title: str, original_content: str, file_context: str) -> str:
         """
         Create content for a new atomic note based on a concept.
+        Now uses full vault context for smarter note creation.
         """
+        # Get comprehensive vault context
+        vault_context = self.get_comprehensive_vault_context()
+        
         prompt = f"""
 Create content for a new atomic note in a second brain/Zettelkasten system.
 
 ATOMIC NOTE TITLE: {concept_title}
 
 CONTEXT (from original note):
-{original_content[:1000]}
+{original_content}
 
 ORIGINAL NOTE CONTEXT: {file_context}
+
+FULL VAULT KNOWLEDGE CONTEXT:
+{vault_context}
+
+SMART ATOMIC NOTE CREATION:
+Using the full vault context above, create an atomic note that:
+1. Focuses solely on the concept: {concept_title}
+2. Connects to existing notes in the vault via [[WikiLinks]]
+3. Fills knowledge gaps identified in the vault
+4. Uses terminology consistent with existing notes
+5. References related concepts that already exist
+6. Provides unique value not covered elsewhere
+
+WRITING GUIDELINES:
+- Use conversational but professional tone
+- Use inclusive language with "we," "let's," and "us"
+- Write clearly and concisely without Latin abbreviations
+- Use active voice over passive voice
+- Use globally accessible language, avoid idioms and colloquialisms
+- Do not reference timeframes or external content
+- Do not assume prior knowledge
+- Use precise, consistent terminology
+- Create stand-alone content that does not rely on external materials
+- Write content that is both technically accurate and engaging
+- Use generic references to AI assistants unless specifically needed
+- Use Oxford commas and proper formatting
+- Provide educational and thorough explanations with clear examples
+- Build understanding progressively
+- Use human and concise format
+- Avoid emojis and double dashes
+
+AVOID these complex or abstract terms: 'delve', 'meticulous,' 'navigating,' 'complexities,' 'realm,' 'bespoke,' 'tailored,' 'towards,' 'underpins,' 'ever-changing,' 'ever-evolving,' 'the world of,' 'not only,' 'seeking more than just,' 'designed to enhance,' 'it's not merely,' 'our suite,' 'it is advisable,' 'daunting,' 'in the heart of,' 'when it comes to,' 'in the realm of,' 'amongst,' 'unlock the secrets,' 'unveil the secrets,' 'transforms' and 'robust.'
 
 CREATE ATOMIC NOTE CONTENT:
 - Focus on ONE concept: {concept_title}
@@ -469,14 +974,18 @@ Return ONLY the note content (no JSON, no explanations):
             or original content unchanged if enhancement fails or safety check fails.
         """
         
-        # Step 1: Scan vault for existing notes
-        tqdm.write("🔍 Scanning vault for existing notes...")
-        existing_notes = self.scan_vault_for_existing_notes()
-        tqdm.write(f"Found {len(existing_notes)} existing notes")
+        # Step 1: Use loaded vault knowledge (no need to scan again)
+        if self.knowledge_loaded:
+            existing_notes = {title: info['path'] for title, info in self.vault_knowledge.items()}
+            tqdm.write(f"📚 Using loaded vault knowledge: {len(existing_notes)} notes")
+        else:
+            tqdm.write("🔍 Scanning vault for existing notes...")
+            existing_notes = self.scan_vault_for_existing_notes()
+            tqdm.write(f"Found {len(existing_notes)} existing notes")
         
         # Step 2: Identify atomic concepts that should be extracted
         tqdm.write("🧠 Identifying atomic concepts...")
-        atomic_concepts = self.identify_atomic_concepts(content, existing_notes)
+        atomic_concepts = self.identify_atomic_concepts(content, file_path)
         
         if atomic_concepts:
             tqdm.write(f"📝 Identified {len(atomic_concepts)} atomic concepts: {', '.join(atomic_concepts)}")
@@ -496,11 +1005,10 @@ Return ONLY the note content (no JSON, no explanations):
                 else:
                     tqdm.write(f"Atomic note already exists: {concept}")
         
-        # Step 4: Build existing notes context for AI
-        existing_titles = list(existing_notes.keys())[:100]  # Limit to avoid token overflow
-        existing_titles_str = "\n".join([f"- [[{title}]]" for title in existing_titles])
+        # Step 4: Get comprehensive vault context for smart enhancement
+        vault_context = self.get_comprehensive_vault_context()
         
-        # Step 5: Enhance the original note with links to atomic notes
+        # Step 5: Enhance the original note with full vault knowledge
         prompt = f"""
 You are enhancing a note in a personal knowledge management system using atomic note principles.
 
@@ -510,11 +1018,40 @@ File: {file_path.name}
 {content}
 ===END ORIGINAL CONTENT===
 
-EXISTING NOTES IN VAULT (use these for [[WikiLinks]]):
-{existing_titles_str}
+FULL VAULT KNOWLEDGE CONTEXT:
+{vault_context}
 
 NEWLY CREATED ATOMIC NOTES (link to these):
 {', '.join([f"[[{note}]]" for note in created_notes]) if created_notes else "None"}
+
+SMART NOTE ENHANCEMENT:
+Using the full vault context above, enhance this note by:
+1. Adding [[WikiLinks]] to existing notes throughout the content
+2. Connecting this note to the broader knowledge network
+3. Referencing newly created atomic notes where relevant
+4. Identifying knowledge gaps this note fills
+5. Using consistent terminology with existing notes
+6. Creating meaningful connections between concepts
+
+WRITING GUIDELINES:
+- Use conversational but professional tone
+- Use inclusive language with "we," "let's," and "us"
+- Write clearly and concisely without Latin abbreviations
+- Use active voice over passive voice
+- Use globally accessible language, avoid idioms and colloquialisms
+- Do not reference timeframes or external content
+- Do not assume prior knowledge
+- Use precise, consistent terminology
+- Create stand-alone content that does not rely on external materials
+- Write content that is both technically accurate and engaging
+- Use generic references to AI assistants unless specifically needed
+- Use Oxford commas and proper formatting
+- Provide educational and thorough explanations with clear examples
+- Build understanding progressively
+- Use human and concise format
+- Avoid emojis and double dashes
+
+AVOID these complex or abstract terms: 'delve', 'meticulous,' 'navigating,' 'complexities,' 'realm,' 'bespoke,' 'tailored,' 'towards,' 'underpins,' 'ever-changing,' 'ever-evolving,' 'the world of,' 'not only,' 'seeking more than just,' 'designed to enhance,' 'it's not merely,' 'our suite,' 'it is advisable,' 'daunting,' 'in the heart of,' 'when it comes to,' 'in the realm of,' 'amongst,' 'unlock the secrets,' 'unveil the secrets,' 'transforms' and 'robust.'
 
 YOUR TASK:
 Return the enhanced note content with ALL original content preserved exactly as written, plus your enhancements following atomic note principles.
@@ -536,11 +1073,15 @@ ATOMIC NOTE ENHANCEMENT FOCUS:
 - Aim for 2-4x the original length (not 10x+)
 - Keep sections focused and non-repetitive
 
-LINKING STRATEGY:
+SMART LINKING STRATEGY:
+- Scan the vault context to identify ALL relevant existing notes
 - Use [[Note Name]] for existing notes whenever concepts are mentioned
-- Reference atomic notes when discussing their concepts
-- Add one "Related Notes" section at the end if helpful
-- Connect to 3-8 relevant existing notes maximum
+- Create natural connections throughout the content, not just at the end
+- Reference newly created atomic notes when discussing their concepts
+- Connect to 5-15 relevant existing notes (be comprehensive)
+- Use the exact note titles from the vault context
+- Create a rich knowledge network with meaningful connections
+- Add a "Related Notes" section if it adds value beyond inline links
 
 CRITICAL OUTPUT REQUIREMENTS:
 - Return ONLY the enhanced note content
@@ -595,7 +1136,7 @@ Begin your response with the enhanced note content now:
         # List of instruction phrases that should never appear in the actual note content
         instruction_indicators = [
             "🚨 CRITICAL SAFETY REQUIREMENTS",
-            "CRITICAL SAFETY REQUIREMENTS",
+            "CRITICAL SAFETY REQUIREMENTS", 
             "SAFETY REQUIREMENTS",
             "NEVER DELETE OR MODIFY ANY EXISTING CONTENT",
             "ONLY ADD NEW CONTENT",
@@ -603,8 +1144,43 @@ Begin your response with the enhanced note content now:
             "NO CORRECTIONS",
             "MUST BE FOLLOWED:",
             "Enhancement Goals:",
-            "REPEATED FOR EMPHASIS"
+            "REPEATED FOR EMPHASIS",
+            "===BEGIN ORIGINAL CONTENT===",
+            "===END ORIGINAL CONTENT===",
+            "BEGIN ORIGINAL CONTENT",
+            "END ORIGINAL CONTENT",
+            "===BEGIN ENHANCEMENT===",
+            "===END ENHANCEMENT===", 
+            "===TEXT ENHANCEMENT===",
+            "===ENHANCEMENT===",
+            "BEGIN ENHANCEMENT",
+            "END ENHANCEMENT",
+            "File:",
+            "CURRENT NOTE TO ENHANCE:",
+            "YOUR TASK:",
+            "STRICT RULES FOR ENHANCEMENT:",
+            "ATOMIC NOTE ENHANCEMENT FOCUS:",
+            "LINKING STRATEGY:",
+            "CRITICAL OUTPUT REQUIREMENTS:"
         ]
+        
+        # First, remove the content markers specifically
+        enhanced_content = enhanced_content.replace("===BEGIN ORIGINAL CONTENT===", "")
+        enhanced_content = enhanced_content.replace("===END ORIGINAL CONTENT===", "")
+        enhanced_content = enhanced_content.replace("BEGIN ORIGINAL CONTENT", "")
+        enhanced_content = enhanced_content.replace("END ORIGINAL CONTENT", "")
+        enhanced_content = enhanced_content.replace("===BEGIN ENHANCEMENT===", "")
+        enhanced_content = enhanced_content.replace("===END ENHANCEMENT===", "")
+        enhanced_content = enhanced_content.replace("===TEXT ENHANCEMENT===", "")
+        enhanced_content = enhanced_content.replace("===ENHANCEMENT===", "")
+        enhanced_content = enhanced_content.replace("BEGIN ENHANCEMENT", "")
+        enhanced_content = enhanced_content.replace("END ENHANCEMENT", "")
+        
+        # Use regex to remove any pattern like ===ANYTHING=== that looks like a marker
+        import re
+        enhanced_content = re.sub(r'={3,}[A-Z\s]+={3,}', '', enhanced_content)
+        # Also remove lines that are just === or similar
+        enhanced_content = re.sub(r'^={3,}$', '', enhanced_content, flags=re.MULTILINE)
         
         lines = enhanced_content.split('\n')
         clean_lines = []
@@ -616,6 +1192,10 @@ Begin your response with the enhanced note content now:
             # Check if this line contains instruction text
             contains_instruction = any(indicator.upper() in line_upper for indicator in instruction_indicators)
             
+            # Skip lines that start with "File:" (from prompt)
+            if line.strip().startswith("File:") and len(line.strip()) < 50:
+                continue
+                
             # If we hit a safety requirements section, start skipping
             if "SAFETY REQUIREMENT" in line_upper or "CRITICAL" in line_upper and "REQUIREMENT" in line_upper:
                 skip_mode = True
@@ -634,6 +1214,10 @@ Begin your response with the enhanced note content now:
             # If not skipping and doesn't contain instructions, keep the line
             if not skip_mode and not contains_instruction:
                 clean_lines.append(line)
+        
+        # Clean up any remaining empty lines at the beginning
+        while clean_lines and not clean_lines[0].strip():
+            clean_lines.pop(0)
                 
         return '\n'.join(clean_lines)
     
@@ -949,6 +1533,40 @@ Begin your response with the enhanced note content now:
             # Silently fail - this is just a convenience feature
             pass
             
+    def load_config(self) -> Dict:
+        """Load configuration from file or return defaults."""
+        default_config = {
+            "auto_keep_enabled": True,
+            "auto_keep_threshold": 7,
+            "auto_delete_enabled": False,
+            "auto_delete_threshold": 2,
+            "show_auto_decisions": True,
+            "max_file_size_kb": 20,  # Ignore files larger than 20 KB
+            "show_skipped_files": True,  # Show which files are skipped due to size
+            "include_subfolders": True  # Include subfolders when scanning for files
+        }
+        
+        try:
+            if self.config_file.exists():
+                with open(self.config_file, 'r') as f:
+                    saved_config = json.load(f)
+                # Merge with defaults to handle new settings
+                default_config.update(saved_config)
+                subfolder_status = "including" if default_config['include_subfolders'] else "excluding"
+                print(f"📁 Loaded settings: max file size {default_config['max_file_size_kb']}KB, {subfolder_status} subfolders")
+        except Exception as e:
+            print(f"Warning: Could not load settings file: {e}")
+            
+        return default_config
+        
+    def save_config(self):
+        """Save current configuration to file."""
+        try:
+            with open(self.config_file, 'w') as f:
+                json.dump(self.config, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Could not save settings file: {e}")
+
     @staticmethod
     def get_last_used_vault_path() -> Optional[str]:
         """Get the most recently used vault path."""
@@ -966,9 +1584,38 @@ Begin your response with the enhanced note content now:
     def find_markdown_files(self) -> List[Path]:
         """Recursively find all markdown files in the vault."""
         print(f"Scanning vault: {self.vault_path}")
-        md_files = list(self.vault_path.rglob("*.md"))
+        
+        # Respect subfolder configuration
+        if self.config.get("include_subfolders", True):
+            md_files = list(self.vault_path.rglob("*.md"))
+            scan_type = "recursively (including subfolders)"
+        else:
+            md_files = list(self.vault_path.glob("*.md"))
+            scan_type = "in root directory only"
+            
+        print(f"Scanning {scan_type}")
+        
+        # Ensure only .md files (filter out any edge cases)
+        md_files = [f for f in md_files if f.suffix.lower() == '.md']
+        
+        # Filter by file size
+        acceptable_files = []
+        skipped_files = []
+        max_size_kb = self.config.get("max_file_size_kb", 30)
+        
+        for file_path in md_files:
+            is_acceptable, size_kb = self.is_file_size_acceptable(file_path)
+            if is_acceptable:
+                acceptable_files.append(file_path)
+            else:
+                skipped_files.append((file_path, size_kb))
+        
+        md_files = acceptable_files
         md_files.sort()  # Sort files alphabetically
-        print(f"Found {len(md_files)} markdown files")
+        
+        print(f"Found {len(md_files)} markdown files (.md only, ≤{max_size_kb}KB)")
+        if skipped_files:
+            print(f"Skipped {len(skipped_files)} large files (>{max_size_kb}KB)")
         
         # Filter out already processed files
         if self.processed_files:
@@ -1125,8 +1772,11 @@ Begin your response with the enhanced note content now:
                 "recommendation": "remove"
             }
             
+        # Get vault context for comparative analysis
+        vault_context = self.get_vault_context_for_analysis(file_path)
+        
         prompt = f"""
-Analyze this Obsidian note and provide a relevance assessment:
+Analyze this Obsidian note and provide a relevance assessment compared to the existing vault knowledge.
 
 File: {file_path.name}
 Path: {file_path.relative_to(self.vault_path)}
@@ -1134,16 +1784,24 @@ Path: {file_path.relative_to(self.vault_path)}
 Content:
 {content[:2000]}...
 
+{vault_context}
+
 Please provide:
 1. A relevance score from 0-10 where:
-   - 0-2: Outdated, redundant, or no value (should delete)
-   - 3-4: Low value, probably safe to delete
-   - 5-6: Moderate value, review carefully
-   - 7-8: High value, likely keep
-   - 9-10: Essential content, definitely keep
+   - 0-2: Poor quality, redundant with existing notes, or no unique value (should delete)
+   - 3-4: Low value compared to existing knowledge, adds little new information
+   - 5-6: Moderate value, has some unique content but could be improved
+   - 7-8: High value, provides useful information not well covered elsewhere
+   - 9-10: Essential content, unique and valuable knowledge
 
 2. Brief reasoning for the score
 3. Recommendation: "remove" (0-4), "enhance" (5-7), or "keep" (8-10)
+
+IMPORTANT: Base the REMOVE recommendation on whether this note adds value compared to your existing knowledge base. Consider:
+- Does this note contain information already covered better in other notes?
+- Is this note of poor quality compared to similar notes in the vault?
+- Does this note provide unique insights or information not found elsewhere?
+- Would removing this note result in any loss of unique knowledge?
 
 Consider factors like:
 - Content quality and depth
@@ -1187,12 +1845,14 @@ Consider factors like:
 - **Templates from others you modified** (adapted to your needs): +1 point (personalization)
 - **Event notes** (conferences, talks you attended with takeaways): +1 point (learning documentation)
 
-**MAJOR PENALTIES (-3-4 points each) - Anti-"Second Brain" Content:**
+**MAJOR PENALTIES (-3-4 points each) - Content That Should Be Removed:**
 - **Copy-pasted content without personal input**: -4 points (not your thoughts, just storage)
+- **Information already covered better in other vault notes**: -4 points (redundant, inferior duplicate)
 - **Easily recreated from Google/Wikipedia**: -4 points (generic information, not personal knowledge)
 - **Temporary/outdated task lists** (completed todos, old project notes): -3 points (served their purpose)
-- **Duplicate information** (same content in multiple places): -3 points (knowledge fragmentation)
-- **Empty placeholder notes** (titles with no content, "TODO" notes never filled): -3 points (intellectual debt)
+- **Duplicate information** (same content exists in multiple places): -4 points (knowledge fragmentation, keep the better version)
+- **Empty placeholder notes** (titles with no content, "TODO" notes never filled): -4 points (intellectual debt)
+- **Poor quality compared to similar notes in vault**: -3 points (inferior version of existing knowledge)
 
 **MODERATE PENALTIES (-2-3 points each) - Reduced Value Content:**
 - **No WikiLinks or tags**: -3 points (isolated from knowledge network, defeats Obsidian's purpose)
@@ -1492,7 +2152,7 @@ JSON REQUIREMENTS:
         print("Starting Obsidian Vault Review")
         print("="*50)
         
-        # Check for existing progress
+        # Check for existing progress first
         continuing_session = False
         if self.load_progress():
             continuing_session = self.get_yes_no_input("\nDo you want to continue the previous review session?", default="y")
@@ -1508,7 +2168,20 @@ JSON REQUIREMENTS:
                 self.atomic_notes_created = []
                 self.atomic_notes_reviewed = []
         
-        # Find all markdown files
+        # Configure auto-decisions FIRST (before any vault scanning or token counting)
+        if not continuing_session:
+            # For new sessions, offer configuration more prominently
+            if self.get_yes_no_input("Configure auto-decision settings before starting?", default="y"):
+                self.configure_auto_decisions()
+        else:
+            # For continuing sessions, make it optional
+            if self.get_yes_no_input("Configure auto-decision settings?", default="n"):
+                self.configure_auto_decisions()
+        
+        # Now load vault knowledge for comparative analysis (this does token counting)
+        self.load_vault_knowledge()
+        
+        # Find all markdown files (respects subfolder configuration set above)
         md_files = self.find_markdown_files()
         
         # Initialize queue for newly created atomic notes
@@ -1531,10 +2204,6 @@ JSON REQUIREMENTS:
         if continuing_session:
             print(f"Progress: {processed_count}/{total_files} files already processed")
         print("Tip: Consider backing up your vault before proceeding!")
-        
-        # Configure auto-decisions if user wants to
-        if self.get_yes_no_input("Configure auto-decision settings?", default="n"):
-            self.configure_auto_decisions()
         
         # Save initial progress to create the file
         self.save_progress()
@@ -1654,7 +2323,11 @@ JSON REQUIREMENTS:
                                 tqdm.write("="*80)
                                 
                                 # Ask user if they want to save the enhancement
-                                tqdm.write(f"\nEnhanced from {len(content)} to {len(enhanced_content)} characters ({len(enhanced_content)/len(content):.1f}x longer)")
+                                if len(content) > 0:
+                                    ratio = len(enhanced_content) / len(content)
+                                    tqdm.write(f"\nEnhanced from {len(content)} to {len(enhanced_content)} characters ({ratio:.1f}x longer)")
+                                else:
+                                    tqdm.write(f"\nEnhanced from empty file to {len(enhanced_content)} characters")
                                 
                                 # Temporarily pause tqdm to get user input
                                 progress_bar.clear()
@@ -1920,8 +2593,26 @@ def main():
             print(f"Please enter a valid directory path or press Enter for default ({default_display}).")
             continue
         
-    # Create reviewer and start
+    # Create reviewer
     reviewer = ObsidianVaultReviewer(api_key, vault_path)
+    
+    # Quick file size configuration option
+    current_size = reviewer.config.get("max_file_size_kb", 20)
+    print(f"\nCurrent file size limit: {current_size}KB")
+    size_input = input(f"Enter new file size limit in KB (10-100) or press Enter to keep {current_size}KB: ").strip()
+    if size_input:
+        try:
+            new_size = int(size_input)
+            if 10 <= new_size <= 100:
+                reviewer.config["max_file_size_kb"] = new_size
+                reviewer.save_config()
+                print(f"File size limit updated to: {new_size}KB")
+            else:
+                print("Invalid size. Using current value.")
+        except ValueError:
+            print("Invalid input. Using current value.")
+    
+    # Start review
     reviewer.review_vault()
 
 
